@@ -7,20 +7,15 @@ defmodule Phoenix.Channel do
 
   ## Topics & Callbacks
 
-  When clients join a channel, they do so by subscribing to a topic.
-  Topics are string identifiers in the `Phoenix.PubSub` layer that allow
-  multiple processes to subscribe and broadcast messages about a given topic.
-  Everytime you join a Channel, you need to choose which particular topic you
+  Everytime you join a channel, you need to choose which particular topic you
   want to listen to. The topic is just an identifier, but by convention it is
   often made of two parts: `"topic:subtopic"`. Using the `"topic:subtopic"`
-  approach pairs nicely with the `Phoenix.Router.channel/3` macro to match
-  topic patterns in your router to your channel handlers:
+  approach pairs nicely with the `Phoenix.Socket.channel/2` allowing you to
+  match on all topics starting with a given prefix:
 
-      socket "/ws", MyApp do
-        channel "rooms:*", RoomChannel
-      end
+      channel "rooms:*", MyApp.RoomChannel
 
-  Any topic coming into the router with the `"rooms:"` prefix, would dispatch
+  Any topic coming into the router with the `"rooms:"` prefix would dispatch
   to `MyApp.RoomChannel` in the above example. Topics can also be pattern
   matched in your channels' `join/3` callback to pluck out the scoped pattern:
 
@@ -29,29 +24,29 @@ defmodule Phoenix.Channel do
         {:ok, socket}
       end
 
-      # handles any other subtopic as the room ID, ie `"rooms:12"`, `"rooms:34"`
+      # handles any other subtopic as the room ID, for example `"rooms:12"`, `"rooms:34"`
       def join("rooms:" <> room_id, auth_message, socket) do
         {:ok, socket}
       end
 
-  ### Authorization
+  ## Authorization
 
   Clients must join a channel to send and receive PubSub events on that channel.
   Your channels must implement a `join/3` callback that authorizes the socket
-  for the given topic. It is common for clients to send up authorization data,
-  such as HMAC'd tokens for this purpose.
+  for the given topic. For example, you could check if the user is allowed to
+  join that particular room.
 
   To authorize a socket in `join/3`, return `{:ok, socket}`.
   To refuse authorization in `join/3`, return `{:error, reply}`.
 
-  ### Incoming Events
+  ## Incoming Events
 
   After a client has successfully joined a channel, incoming events from the
   client are routed through the channel's `handle_in/3` callbacks. Within these
   callbacks, you can perform any action. Typically you'll either forward a
-  message to all listeners with `Phoenix.Channel.broadcast!/3`, or push a message
-  directly down the socket with `Phoenix.Channel.push/3`.
-  Incoming callbacks must return the `socket` to maintain ephemeral state.
+  message to all listeners with `broadcast!/3`, or push a message directly down
+  the socket with `push/3`. Incoming callbacks must return the `socket` to
+  maintain ephemeral state.
 
   Here's an example of receiving an incoming `"new_msg"` event from one client,
   and broadcasting the message to all topic subscribers for this socket.
@@ -64,12 +59,12 @@ defmodule Phoenix.Channel do
   You can also push a message directly down the socket:
 
       # client asks for their current rank, push sent directly as a new event.
-      def handle_in("current:rank", socket) do
-        push socket, "current:rank", %{val: Game.get_rank(socket.assigns[:user])}
+      def handle_in("current_rank", socket) do
+        push socket, "current_rank", %{val: Game.get_rank(socket.assigns[:user])}
         {:noreply, socket}
       end
 
-  ### Replies
+  ## Replies
 
   In addition to pushing messages out when you receive a `handle_in` event,
   you can also reply directly to a client event for request/response style
@@ -82,7 +77,7 @@ defmodule Phoenix.Channel do
         changeset = Post.changeset(%Post{}, attrs)
 
         if changeset.valid? do
-          Repo.insert(changeset)
+          Repo.insert!(changeset)
           {:reply, {:ok, changeset}, socket}
         else
           {:reply, {:error, changeset.errors}, socket}
@@ -95,24 +90,23 @@ defmodule Phoenix.Channel do
         changeset = Post.changeset(%Post{}, attrs)
 
         if changeset.valid? do
-          Repo.insert(changeset)
-          {:ok, socket}
+          Repo.insert!(changeset)
+          {:reply, :ok, socket}
         else
           {:reply, :error, socket}
         end
       end
 
-  ### Outgoing Events
+  ## Intercepting Outgoing Events
 
-  When an event is broadcasted with `Phoenix.Channel.broadcast/3`, each channel
-  subscriber's `handle_out/3` callback is triggered where the event can be
-  relayed as is, or customized on a socket by socket basis to append extra
-  information, or conditionally filter the message from being delivered.
+  When an event is broadcasted with `broadcast/3`, each channel subscriber can
+  choose to intercept the event and have their `handle_out/3` callback triggered.
+  This allows the event's payload to be customized on a socket by socket basis
+  to append extra information, or conditionally filter the message from being
+  delivered. If the event is not intercepted with `Phoenix.Channel.intercept/1`,
+  then the message is pushed directly to the client:
 
-      def handle_in("new_msg", %{"uid" => uid, "body" => body}, socket) do
-        broadcast! socket, "new_msg", %{uid: uid, body: body}
-        {:noreply, socket}
-      end
+      intercept ["new_msg", "user_joined"]
 
       # for every socket subscribing to this topic, append an `is_editable`
       # value for client metadata.
@@ -123,32 +117,28 @@ defmodule Phoenix.Channel do
         {:noreply, socket}
       end
 
-      # do not send broadcasted `"user:joined"` events if this socket's user
+      # do not send broadcasted `"user_joined"` events if this socket's user
       # is ignoring the user who joined.
-      def handle_out("user:joined", msg, socket) do
+      def handle_out("user_joined", msg, socket) do
         unless User.ignoring?(socket.assigns[:user], msg.user_id) do
-          push socket, "user:joined", msg
+          push socket, "user_joined", msg
         end
         {:noreply, socket}
       end
 
-  By default, unhandled outgoing events are forwarded to each client as a push,
-  but you'll need to define the catch-all clause yourself once you define an
-  `handle_out/3` clause.
-
   ## Broadcasting to an external topic
 
-  In some cases, you will want to broadcast messages without the context of a `socket`.
-  This could be for broadcasting from within your channel to an external topic, or
-  broadcasting from elsewhere in your application like a Controller or GenServer.
-  For these cases, you can broadcast from your Endpoint. Its configured PubSub
-  server will be used:
+  In some cases, you will want to broadcast messages without the context of
+  a `socket`. This could be for broadcasting from within your channel to an
+  external topic, or broadcasting from elsewhere in your application like a
+  controller or another process. Such can be done via your endpoint:
 
       # within channel
       def handle_in("new_msg", %{"uid" => uid, "body" => body}, socket) do
         ...
         broadcast_from! socket, "new_msg", %{uid: uid, body: body}
-        MyApp.Endpoint.broadcast_from! self(), "rooms:superadmin", "new_msg", %{uid: uid, body: body}
+        MyApp.Endpoint.broadcast_from! self(), "rooms:superadmin",
+          "new_msg", %{uid: uid, body: body}
         {:noreply, socket}
       end
 
@@ -169,12 +159,16 @@ defmodule Phoenix.Channel do
   `{:shutdown, :left}`. Similarly, if we are terminating because the
   client connection was closed, the reason will be `{:shutdown, :closed}`.
 
-  If any of the callbacks return a stop tuple, that will also trigger
-  terminate, with the given reason.
+  If any of the callbacks return a `:stop` tuple, it will also
+  trigger terminate with the reason given in the tuple.
 
-  Note `terminate/2` may also be invoked in case of errors or exits
-  but only if the current process is trapping exits. This practice,
-  however, is typically not recommended.
+  `terminate/2`, however, won't be invoked in case of errors nor in
+  case of exits. This is the same behaviour as you find in Elixir
+  abstractions like `GenServer` and others. Typically speaking, if you
+  want to clean something up, it is better to monitor your channel
+  process and do the clean up from another process.  Similar to GenServer,
+  it would also be possible `:trap_exit` to guarantee that `terminate/2`
+  is invoked. This practice is not encouraged though.
   """
 
   use Behaviour
@@ -194,10 +188,6 @@ defmodule Phoenix.Channel do
               {:stop, reason :: term, Socket.t} |
               {:stop, reason :: term, reply, Socket.t}
 
-  defcallback handle_out(event :: String.t, msg :: map, Socket.t) ::
-              {:noreply, Socket.t} |
-              {:stop, reason :: term, Socket.t}
-
   defcallback handle_info(term, Socket.t) ::
               {:noreply, Socket.t} |
               {:stop, reason :: term, Socket.t}
@@ -206,17 +196,18 @@ defmodule Phoenix.Channel do
               {:shutdown, :left | :closed} |
               term
 
+
   defmacro __using__(_) do
     quote do
       @behaviour unquote(__MODULE__)
+      @on_definition unquote(__MODULE__)
+      @before_compile unquote(__MODULE__)
+      @phoenix_intercepts []
+
       import unquote(__MODULE__)
+      import Phoenix.Socket, only: [assign: 3]
 
       def handle_in(_event, _message, socket) do
-        {:noreply, socket}
-      end
-
-      def handle_out(event, message, socket) do
-        push(socket, event, message)
         {:noreply, socket}
       end
 
@@ -224,8 +215,62 @@ defmodule Phoenix.Channel do
 
       def terminate(_reason, _socket), do: :ok
 
-      defoverridable handle_info: 2, handle_out: 3, handle_in: 3, terminate: 2
+      defoverridable handle_info: 2, handle_in: 3, terminate: 2
     end
+  end
+
+  defmacro __before_compile__(_) do
+    quote do
+      def __intercepts__, do: @phoenix_intercepts
+    end
+  end
+
+  @doc """
+  Defines which Channel events to intercept for `handle_out/3` callbacks.
+
+  By default, broadcasted events are pushed directly to the client, but
+  intercepting events gives your channel a chance to customize the event
+  for the client to append extra information or filter the message from being
+  delivered.
+
+  *Note*: intercepting events can introduce significantly more overhead if a
+  large number of subscribers must customize a message since the broadcast will
+  be encoded N times instead of a single shared encoding across all subscribers.
+
+  ## Examples
+
+      intercept ["new_msg"]
+
+      def handle_out("new_msg", payload, socket) do
+        push socket, "new_msg", Map.merge(payload,
+          is_editable: User.can_edit_message?(socket.assigns[:user], payload)
+        )
+        {:noreply, socket}
+      end
+
+  `handle_out/3` callbacks must return one of:
+
+      {:noreply, Socket.t} |
+      {:stop, reason :: term, Socket.t}
+
+  """
+  defmacro intercept(events) when is_list(events) do
+    quote do
+      @phoenix_intercepts unquote(events)
+    end
+  end
+
+  @doc false
+  def __on_definition__(env, :def, :handle_out, [event, _payload, _socket], _, _)
+    when is_binary(event) do
+
+    unless event in Module.get_attribute(env.module, :phoenix_intercepts) do
+      IO.write "#{Path.relative_to(env.file, File.cwd!)}:#{env.line}: [warning] " <>
+               "An intercept for event \"#{event}\" has not yet been defined in #{env.module}.handle_out/3. " <>
+               "Add \"#{event}\" to your list of intercepted events with intercept/1"
+    end
+  end
+  def __on_definition__(_env, _kind, _name, _args, _guards, _body) do
   end
 
   @doc """
@@ -290,7 +335,7 @@ defmodule Phoenix.Channel do
   """
   def push(socket, event, message) do
     %{transport_pid: transport_pid, topic: topic} = assert_joined!(socket)
-    Server.push(transport_pid, topic, event, message)
+    Server.push(transport_pid, topic, event, message, socket.serializer)
   end
 
   defp assert_joined!(%Socket{joined: true} = socket) do
@@ -313,21 +358,5 @@ defmodule Phoenix.Channel do
           {:noreply, socket}
         end
     """
-  end
-
-  @doc """
-  Adds key/value pair to socket assigns.
-
-  ## Examples
-
-      iex> socket.assigns[:token]
-      nil
-      iex> socket = assign(socket, :token, "bar")
-      iex> socket.assigns[:token]
-      "bar"
-
-  """
-  def assign(socket = %Socket{}, key, value) do
-    update_in socket.assigns, &Map.put(&1, key, value)
   end
 end

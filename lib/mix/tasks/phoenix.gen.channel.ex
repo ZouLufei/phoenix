@@ -27,18 +27,16 @@ defmodule Mix.Tasks.Phoenix.Gen.Channel do
 
     Mix.Phoenix.check_module_name_availability!(binding[:module] <> "Channel")
 
-    Mix.Phoenix.copy_from source_dir, "", binding, [
+    Mix.Phoenix.copy_from paths(), "priv/templates/phoenix.gen.channel", "", binding, [
       {:eex, "channel.ex",       "web/channels/#{path}_channel.ex"},
       {:eex, "channel_test.exs", "test/channels/#{path}_channel_test.exs"},
     ]
 
     Mix.shell.info """
 
-    Add the channel to a socket scope in web/router.ex:
+    Add the channel to your `web/channels/user_socket.ex` handler, for example:
 
-        socket "/ws", #{binding[:base]} do
-          channel "#{plural}:lobby", #{binding[:scoped]}Channel
-        end
+        channel "#{plural}:lobby", #{binding[:module]}Channel
     """
   end
 
@@ -57,7 +55,7 @@ defmodule Mix.Tasks.Phoenix.Gen.Channel do
     args
   end
 
-  defp source_dir do
-    Application.app_dir(:phoenix, "priv/templates/channel")
+  defp paths do
+    [".", :phoenix]
   end
 end

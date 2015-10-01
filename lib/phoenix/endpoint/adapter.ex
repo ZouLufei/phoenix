@@ -12,12 +12,14 @@ defmodule Phoenix.Endpoint.Adapter do
   """
   def start_link(otp_app, mod) do
     conf = config(otp_app, mod)
+    server? = Keyword.get(conf, :server,
+                          Application.get_env(:phoenix, :serve_endpoints, false))
 
     children =
       config_children(mod, conf) ++
       pubsub_children(mod, conf) ++
-      server_children(mod, conf) ++
-      watcher_children(mod, conf) ++
+      server_children(mod, conf, server?) ++
+      watcher_children(mod, conf, server?) ++
       code_reloader_children(mod, conf)
 
     case Supervisor.start_link(children, strategy: :one_for_one, name: mod) do
@@ -30,8 +32,10 @@ defmodule Phoenix.Endpoint.Adapter do
   end
 
   defp config_children(mod, conf) do
+    id   = :crypto.strong_rand_bytes(16) |> Base.encode64
     app  = conf[:otp_app]
-    args = [app, mod, defaults(app, mod), [name: Module.concat(mod, Config)]]
+    conf = [endpoint_id: id] ++ defaults(app, mod)
+    args = [app, mod, conf, [name: Module.concat(mod, Config)]]
     [worker(Phoenix.Config, args)]
   end
 
@@ -45,13 +49,17 @@ defmodule Phoenix.Endpoint.Adapter do
     end
   end
 
-  defp server_children(mod, conf) do
-    args = [conf[:otp_app], mod, [name: Module.concat(mod, Server)]]
-    [supervisor(Phoenix.Endpoint.Server, args)]
+  defp server_children(mod, conf, server?) do
+    if server? do
+      args = [conf[:otp_app], mod, [name: Module.concat(mod, Server)]]
+      [supervisor(Phoenix.Endpoint.Server, args)]
+    else
+      []
+    end
   end
 
-  defp watcher_children(_mod, conf) do
-    if conf[:server] do
+  defp watcher_children(_mod, conf, server?) do
+    if server? do
       Enum.map(conf[:watchers], fn {cmd, args} ->
         worker(Phoenix.Endpoint.Watcher, [root!(conf), cmd, args],
                id: {cmd, args}, restart: :transient)
@@ -63,7 +71,7 @@ defmodule Phoenix.Endpoint.Adapter do
 
   defp code_reloader_children(mod, conf) do
     if conf[:code_reloader] do
-      args = [conf[:otp_app], root!(conf), conf[:reloadable_paths],
+      args = [conf[:otp_app], root!(conf), conf[:reloadable_paths], conf[:reloadable_compilers],
               [name: Module.concat(mod, CodeReloader)]]
       [worker(Phoenix.CodeReloader.Server, args)]
     else
@@ -90,29 +98,17 @@ defmodule Phoenix.Endpoint.Adapter do
      # Compile-time config
      code_reloader: false,
      debug_errors: false,
-     render_errors: [view: render_errors(module), default_format: "html"],
-
-     # Transports
-     transports: [
-       longpoller_window_ms: 10_000,
-       longpoller_pubsub_timeout_ms: 1000,
-       longpoller_crypto: [iterations: 1000,
-                           length: 32,
-                           digest: :sha256,
-                           cache: Plug.Keys],
-
-       websocket_serializer: Phoenix.Transports.JSONSerializer,
-       websocket_timeout: :infinity
-     ],
+     render_errors: [view: render_errors(module), accepts: ~w(html)],
 
      # Runtime config
      cache_static_lookup: true,
      cache_static_manifest: nil,
+     check_origin: true,
      http: false,
      https: false,
+     reloadable_compilers: [:gettext, :phoenix, :elixir],
      reloadable_paths: ["web"],
      secret_key_base: nil,
-     server: Application.get_env(:phoenix, :serve_endpoints, false),
      static_url: nil,
      url: [host: "localhost", path: "/"],
 
@@ -144,7 +140,7 @@ defmodule Phoenix.Endpoint.Adapter do
   the Phoenix.Config layer knows how to cache it.
   """
   def url(endpoint) do
-    {:cache, calculate_url(endpoint, endpoint.config(:url))}
+    {:cache, build_url(endpoint, endpoint.config(:url)) |> String.Chars.URI.to_string()}
   end
 
   @doc """
@@ -155,29 +151,45 @@ defmodule Phoenix.Endpoint.Adapter do
   """
   def static_url(endpoint) do
     url = endpoint.config(:static_url) || endpoint.config(:url)
-    {:cache, calculate_url(endpoint, url)}
+    {:cache, build_url(endpoint, url) |> String.Chars.URI.to_string()}
   end
 
-  defp calculate_url(endpoint, url) do
+  @doc """
+  Builds a struct url for user processing.
+
+  The result is wrapped in a `{:cache, value}` tuple so
+  the Phoenix.Config layer knows how to cache it.
+  """
+  def struct_url(endpoint) do
+    url    = endpoint.config(:url)
+    struct = build_url(endpoint, url)
+    {:cache,
+      case url[:path] do
+        "/"  -> struct
+        path -> %{struct | path: path}
+      end}
+  end
+
+  defp build_url(endpoint, url) do
+    build_url(endpoint.config(:https), endpoint.config(:http), url)
+  end
+
+  defp build_url(https, http, url) do
     {scheme, port} =
       cond do
-        config = endpoint.config(:https) ->
-          {"https", config[:port]}
-        config = endpoint.config(:http) ->
-          {"http", config[:port]}
+        https ->
+          {"https", https[:port]}
+        http ->
+          {"http", http[:port]}
         true ->
-          {"http", "80"}
+          {"http", 80}
       end
 
     scheme = url[:scheme] || scheme
     host   = url[:host]
-    port   = port_to_string(url[:port] || port)
+    port   = port_to_integer(url[:port] || port)
 
-    case {scheme, port} do
-      {"https", "443"} -> "https://" <> host
-      {"http", "80"}   -> "http://" <> host
-      {_, _}           -> scheme <> "://" <> host <> ":" <> port
-    end
+    %URI{scheme: scheme, port: port, host: host}
   end
 
   @doc """
@@ -186,7 +198,7 @@ defmodule Phoenix.Endpoint.Adapter do
   When the file exists, it includes a timestamp. When it doesn't exist,
   just the static path is returned.
 
-  The result is wrapped in a `{:cache | :stale, value}` tuple so
+  The result is wrapped in a `{:cache | :nocache, value}` tuple so
   the Phoenix.Config layer knows how to cache it.
   """
   def static_path(endpoint, "/" <> _ = path) do
@@ -194,11 +206,11 @@ defmodule Phoenix.Endpoint.Adapter do
 
     case File.stat(file) do
       {:ok, %File.Stat{type: :regular, mtime: mtime, size: size}} ->
-        key = if endpoint.config(:cache_static_lookup), do: :cache, else: :stale
+        key = if endpoint.config(:cache_static_lookup), do: :cache, else: :nocache
         vsn = {size, mtime} |> :erlang.phash2() |> Integer.to_string(16)
         {key, path <> "?vsn=" <> vsn}
       _ ->
-        {:stale, path}
+        {:nocache, path}
     end
   end
 
@@ -206,9 +218,9 @@ defmodule Phoenix.Endpoint.Adapter do
     raise ArgumentError, "static_path/2 expects a path starting with / as argument"
   end
 
-  defp port_to_string({:system, env_var}), do: System.get_env(env_var)
-  defp port_to_string(port) when is_binary(port), do: port
-  defp port_to_string(port) when is_integer(port), do: Integer.to_string(port)
+  defp port_to_integer({:system, env_var}), do: port_to_integer(System.get_env(env_var))
+  defp port_to_integer(port) when is_binary(port), do: String.to_integer(port)
+  defp port_to_integer(port) when is_integer(port), do: port
 
   @doc """
   Invoked to warm up caches on start and config change.
@@ -243,8 +255,8 @@ defmodule Phoenix.Endpoint.Adapter do
         Poison.decode!(File.read!(outer))
       else
         Logger.error "Could not find static manifest at #{inspect outer}. " <>
-                     "Run mix phoenix.digest after building your static files " <>
-                     "or remove the configuration from config/prod.exs."
+                     "Run \"mix phoenix.digest\" after building your static files " <>
+                     "or remove the configuration from \"config/prod.exs.\""
       end
     else
       %{}

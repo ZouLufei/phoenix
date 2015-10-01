@@ -19,6 +19,12 @@ defmodule <%= application_module %>.Web do
   def model do
     quote do
       use Ecto.Model
+
+      import Ecto.Changeset
+      import Ecto.Query, only: [from: 1, from: 2]<%= if adapter_config[:binary_id] do %>
+
+      @primary_key {:id, :binary_id, autogenerate: true}
+      @foreign_key_type :binary_id<% end %>
     end
   end
 <% else %>
@@ -32,12 +38,10 @@ defmodule <%= application_module %>.Web do
     quote do
       use Phoenix.Controller<%= if namespaced? do %>, namespace: <%= application_module %><% end %>
 <%= if ecto do %>
-      # Alias the data repository and import query/model functions
       alias <%= application_module %>.Repo
       import Ecto.Model
-      import Ecto.Query, only: [from: 2]
+      import Ecto.Query, only: [from: 1, from: 2]
 <% end %>
-      # Import URL helpers from the router
       import <%= application_module %>.Router.Helpers
     end
   end
@@ -47,13 +51,12 @@ defmodule <%= application_module %>.Web do
       use Phoenix.View, root: "web/templates"<%= if namespaced? do %>, namespace: <%= application_module %><% end %>
 
       # Import convenience functions from controllers
-      import Phoenix.Controller, only: [get_csrf_token: 0, get_flash: 2, view_module: 1]
-
-      # Import URL helpers from the router
-      import <%= application_module %>.Router.Helpers
+      import Phoenix.Controller, only: [get_csrf_token: 0, get_flash: 2, view_module: 1]<%= if html do %>
 
       # Use all HTML functionality (forms, tags, etc)
-      use Phoenix.HTML
+      use Phoenix.HTML<% end %>
+
+      import <%= application_module %>.Router.Helpers
     end
   end
 
@@ -65,13 +68,11 @@ defmodule <%= application_module %>.Web do
 
   def channel do
     quote do
-      use Phoenix.Channel
-<%= if ecto do %>
-      # Alias the data repository and import query/model functions
+      use Phoenix.Channel<%= if ecto do %>
+
       alias <%= application_module %>.Repo
       import Ecto.Model
-      import Ecto.Query, only: [from: 2]
-<% end %>
+      import Ecto.Query, only: [from: 1, from: 2]<% end %>
     end
   end
 

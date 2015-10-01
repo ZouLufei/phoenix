@@ -35,10 +35,10 @@ defmodule Phoenix.Controller.ControllerTest do
     assert endpoint_module(conn) == Hello
   end
 
-  test "controller_template/1" do
+  test "view_template/1" do
     conn = put_private(%Conn{}, :phoenix_template, "hello.html")
-    assert controller_template(conn) == "hello.html"
-    assert controller_template(%Conn{}) == nil
+    assert view_template(conn) == "hello.html"
+    assert view_template(%Conn{}) == nil
   end
 
   test "put_layout_formats/2 and layout_formats/1" do
@@ -132,48 +132,60 @@ defmodule Phoenix.Controller.ControllerTest do
              ["application/vnd.api+json; charset=utf-8"]
   end
 
-  test "jsonp/3 returns json when no callback param is present" do
-    conn = jsonp(conn(:get, "/") |> fetch_query_params, %{foo: :bar})
+  test "allow_jsonp/2 returns json when no callback param is present" do
+    conn = conn(:get, "/")
+           |> fetch_query_params
+           |> allow_jsonp
+           |> json(%{foo: "bar"})
     assert conn.resp_body == "{\"foo\":\"bar\"}"
     assert get_resp_content_type(conn) == "application/json"
     refute conn.halted
   end
 
-  test "jsonp/3 returns json when callback name is left empty" do
-    conn = jsonp(conn(:get, "/?callback=") |> fetch_query_params, %{foo: :bar})
+  test "allow_jsonp/2 returns json when callback name is left empty" do
+    conn = conn(:get, "/?callback=")
+           |> fetch_query_params
+           |> allow_jsonp
+           |> json(%{foo: "bar"})
     assert conn.resp_body == "{\"foo\":\"bar\"}"
     assert get_resp_content_type(conn) == "application/json"
     refute conn.halted
   end
 
-  test "jsonp/3 returns javascript when callback param is present" do
-    conn = conn(:get, "/?callback=cb") |> fetch_query_params()
-    conn = jsonp(conn, %{foo: :bar})
+  test "allow_jsonp/2 returns javascript when callback param is present" do
+    conn = conn(:get, "/?callback=cb")
+           |> fetch_query_params
+           |> allow_jsonp
+           |> json(%{foo: "bar"})
     assert conn.resp_body == "/**/ typeof cb === 'function' && cb({\"foo\":\"bar\"});"
-    assert get_resp_content_type(conn) == "text/javascript"
-    refute conn.halted
-  end
-    
-  test "jsonp/3 allows to override the callback param" do
-    conn = conn(:get, "/?cb=cb") |> fetch_query_params()
-    conn = jsonp(conn, %{foo: :bar}, callback: "cb")
-    assert conn.resp_body == "/**/ typeof cb === 'function' && cb({\"foo\":\"bar\"});"
-    assert get_resp_content_type(conn) == "text/javascript"
+    assert get_resp_content_type(conn) == "application/javascript"
     refute conn.halted
   end
 
-  test "jsonp/3 raises ArgumentError when callback contains invalid characters" do
+  test "allow_jsonp/2 allows to override the callback param" do
+    conn = conn(:get, "/?cb=cb")
+           |> fetch_query_params
+           |> allow_jsonp(callback: "cb")
+           |> json(%{foo: "bar"})
+    assert conn.resp_body == "/**/ typeof cb === 'function' && cb({\"foo\":\"bar\"});"
+    assert get_resp_content_type(conn) == "application/javascript"
+    refute conn.halted
+  end
+
+  test "allow_jsonp/2 raises ArgumentError when callback contains invalid characters" do
     conn = conn(:get, "/?cb=_c*b!()[0]") |> fetch_query_params()
-    assert_raise(ArgumentError, "the callback name contains invalid characters", fn ->
-    jsonp(conn, %{foo: :bar}, callback: "cb") end)
-    refute conn.halted
+    assert_raise ArgumentError, "the JSONP callback name contains invalid characters", fn ->
+      allow_jsonp(conn, callback: "cb")
+    end
   end
 
-  test "jsonp/3 escapes invalid javascript characters" do
-    conn = conn(:get, "/?cb=cb") |> fetch_query_params()
-    conn = jsonp(conn, %{foo: <<0x2028::utf8>> <> <<0x2029::utf8>>}, callback: "cb")
+  test "allow_jsonp/2 escapes invalid javascript characters" do
+    conn = conn(:get, "/?cb=cb")
+           |> fetch_query_params
+           |> allow_jsonp(callback: "cb")
+           |> json(%{foo: <<0x2028::utf8, 0x2029::utf8>>})
     assert conn.resp_body == "/**/ typeof cb === 'function' && cb({\"foo\":\"\\u2028\\u2029\"});"
-    assert get_resp_content_type(conn) == "text/javascript"
+    assert get_resp_content_type(conn) == "application/javascript"
     refute conn.halted
   end
 
@@ -223,6 +235,10 @@ defmodule Phoenix.Controller.ControllerTest do
     assert_raise ArgumentError, ~r/the :to option in redirect expects a path/, fn ->
       redirect(conn(:get, "/"), to: "http://example.com")
     end
+
+    assert_raise ArgumentError, ~r/the :to option in redirect expects a path/, fn ->
+      redirect(conn(:get, "/"), to: "//example.com")
+    end
   end
 
   test "redirect/2 with :external" do
@@ -244,59 +260,72 @@ defmodule Phoenix.Controller.ControllerTest do
     |> put_req_header("accept", header)
   end
 
-  test "accepts/2 uses params[:format] when available" do
-    conn = accepts conn(:get, "/", format: "json"), ~w(json)
-    assert conn.params["format"] == "json"
+  test "accepts/2 uses params[\"_format\"] when available" do
+    conn = accepts conn(:get, "/", _format: "json"), ~w(json)
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == "json"
 
-    conn = accepts conn(:get, "/", format: "json"), ~w(html)
+    conn = accepts conn(:get, "/", _format: "json"), ~w(html)
     assert conn.status == 406
     assert conn.halted
   end
 
   test "accepts/2 uses first accepts on empty or catch-all header" do
     conn = accepts conn(:get, "/", []), ~w(json)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
 
     conn = accepts with_accept("*/*"), ~w(json)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
   end
 
   test "accepts/2 on non-empty */*" do
     # Fallbacks to HTML due to browsers behavior
     conn = accepts with_accept("application/json, */*"), ~w(html json)
-    assert conn.params["format"] == "html"
+    assert get_format(conn) == "html"
+    assert conn.params["_format"] == nil
 
     conn = accepts with_accept("*/*, application/json"), ~w(html json)
-    assert conn.params["format"] == "html"
+    assert get_format(conn) == "html"
+    assert conn.params["_format"] == nil
 
     # No HTML is treated normally
     conn = accepts with_accept("*/*, text/plain, application/json"), ~w(json text)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
 
     conn = accepts with_accept("text/plain, application/json, */*"), ~w(json text)
-    assert conn.params["format"] == "text"
+    assert get_format(conn) == "text"
+    assert conn.params["_format"] == nil
   end
 
   test "accepts/2 ignores invalid media types" do
     conn = accepts with_accept("foo/bar, bar baz, application/json"), ~w(html json)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
   end
 
   test "accepts/2 considers q params" do
     conn = accepts with_accept("text/html; q=0.7, application/json"), ~w(html json)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
 
     conn = accepts with_accept("application/json, text/html; q=0.7"), ~w(html json)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
 
     conn = accepts with_accept("application/json; q=1.0, text/html; q=0.7"), ~w(html json)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
 
     conn = accepts with_accept("application/json; q=0.8, text/html; q=0.7"), ~w(html json)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
 
     conn = accepts with_accept("text/html; q=0.7, application/json; q=0.8"), ~w(html json)
-    assert conn.params["format"] == "json"
+    assert get_format(conn) == "json"
+    assert conn.params["_format"] == nil
 
     conn = accepts with_accept("text/html; q=0.7, application/json; q=0.8"), ~w(xml)
     assert conn.halted
@@ -304,11 +333,11 @@ defmodule Phoenix.Controller.ControllerTest do
   end
 
   test "scrub_params/2 raises Phoenix.MissingParamError for missing key" do
-    assert_raise(Phoenix.MissingParamError, "expected key for \"foo\" to be present", fn ->
+    assert_raise(Phoenix.MissingParamError, ~r"expected key \"foo\" to be present in params", fn ->
       conn(:get, "/") |> fetch_query_params |> scrub_params("foo")
     end)
 
-    assert_raise(Phoenix.MissingParamError, "expected key for \"foo\" to be present", fn ->
+    assert_raise(Phoenix.MissingParamError, ~r"expected key \"foo\" to be present in params", fn ->
       conn(:get, "/?foo=") |> fetch_query_params |> scrub_params("foo")
     end)
   end
@@ -368,6 +397,13 @@ defmodule Phoenix.Controller.ControllerTest do
 
     assert is_binary get_csrf_token
     assert is_binary delete_csrf_token
+  end
+
+  test "put_secure_browser_headers/2" do
+    conn = conn(:get, "/") |> put_secure_browser_headers()
+    assert get_resp_header(conn, "x-frame-options") == ["SAMEORIGIN"]
+    assert get_resp_header(conn, "x-xss-protection") == ["1; mode=block"]
+    assert get_resp_header(conn, "x-content-type-options") == ["nosniff"]
   end
 
   test "__view__ returns the view module based on controller module" do

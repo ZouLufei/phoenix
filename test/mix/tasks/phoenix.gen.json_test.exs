@@ -34,6 +34,8 @@ defmodule Mix.Tasks.Phoenix.Gen.JsonTest do
       assert_file "web/views/user_view.ex", fn file ->
         assert file =~ "defmodule Phoenix.UserView do"
         assert file =~ "use Phoenix.Web, :view"
+        assert file =~ "id: user.id,"
+        assert file =~ "name: user.name"
       end
 
       assert_file "test/controllers/user_controller_test.exs", fn file ->
@@ -53,7 +55,9 @@ defmodule Mix.Tasks.Phoenix.Gen.JsonTest do
         assert file =~ ~S|conn = post conn, user_path(conn, :create), user: @invalid_attrs|
 
         assert file =~ ~S|test "shows chosen resource"|
-        assert file =~ ~S|user = Repo.insert %User{}|
+        assert file =~ ~S|user = Repo.insert! %User{}|
+        assert file =~ ~S|"id" => user.id,|
+        assert file =~ ~S|"name" => user.name|
 
         assert file =~ ~S|test "updates and renders chosen resource when data is valid"|
         assert file =~ ~S|conn = put conn, user_path(conn, :update, user), user: @valid_attrs|
@@ -67,7 +71,21 @@ defmodule Mix.Tasks.Phoenix.Gen.JsonTest do
       end
 
       assert_received {:mix_shell, :info, ["\nAdd the resource" <> _ = message]}
-      assert message =~ ~s(resources "/users", UserController)
+      assert message =~ ~s(resources "/users", UserController, except: [:new, :edit])
+    end
+  end
+
+  test "doesn't generate a resource when there is an error" do
+    in_tmp "doesnt generate resource on error", fn ->
+      assert_raise(Mix.Error, fn ->
+        Mix.Tasks.Phoenix.Gen.Json.run ["user", "users", "name", "age:integer", "info:notvalid"]
+      end)
+
+      refute_file "web/models/user.ex"
+      refute_file "test/models/user_test.exs"
+      refute_file "web/controllers/user_controller.ex"
+      refute_file "test/controllers/user_controller_test.exs"
+      refute_file "web/views/user_view.ex"
     end
   end
 
@@ -87,6 +105,8 @@ defmodule Mix.Tasks.Phoenix.Gen.JsonTest do
       assert_file "web/views/admin/user_view.ex", fn file ->
         assert file =~ "defmodule Phoenix.Admin.UserView do"
         assert file =~ "use Phoenix.Web, :view"
+        assert file =~ "id: user.id,"
+        assert file =~ "name: user.name"
       end
 
       assert_received {:mix_shell, :info, ["\nAdd the resource" <> _ = message]}
@@ -102,6 +122,30 @@ defmodule Mix.Tasks.Phoenix.Gen.JsonTest do
       assert [] = Path.wildcard("priv/repo/migrations/*_create_api_v1_user.exs")
 
       assert_file "web/controllers/api/v1/user_controller.ex"
+
+      assert_file "web/views/api/v1/user_view.ex", fn file ->
+        assert file =~ "defmodule Phoenix.API.V1.UserView do"
+        assert file =~ "use Phoenix.Web, :view"
+        assert file =~ "id: user.id,"
+        assert file =~ "name: user.name"
+      end
+    end
+  end
+
+  test "generates json resource with only id field" do
+    in_tmp "generates json resource with only id field", fn ->
+      Mix.Tasks.Phoenix.Gen.Json.run ["User", "users"]
+
+      assert File.exists? "web/models/user.ex"
+      assert [_] = Path.wildcard("priv/repo/migrations/*_create_user.exs")
+
+      assert_file "web/controllers/user_controller.ex"
+
+      assert_file "web/views/user_view.ex", fn file ->
+        assert file =~ "defmodule Phoenix.UserView do"
+        assert file =~ "use Phoenix.Web, :view"
+        assert file =~ ~S|%{id: user.id}|
+      end
     end
   end
 
@@ -111,7 +155,17 @@ defmodule Mix.Tasks.Phoenix.Gen.JsonTest do
     end
   end
 
-  test "name can't already be defined" do
+  test "plural can't have uppercased characters or camelized format" do
+    assert_raise Mix.Error, fn ->
+      Mix.Tasks.Phoenix.Gen.Html.run ["Admin.User", "Users", "foo:string"]
+    end
+
+    assert_raise Mix.Error, fn ->
+      Mix.Tasks.Phoenix.Gen.Html.run ["Admin.User", "AdminUsers", "foo:string"]
+    end
+  end
+
+  test "name is already defined" do
     assert_raise Mix.Error, fn ->
       Mix.Tasks.Phoenix.Gen.Json.run ["DupJSON", "dupjsons"]
     end

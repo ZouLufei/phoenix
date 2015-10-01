@@ -23,12 +23,38 @@ defmodule Phoenix.Controller.PipelineTest do
       prepend(conn, :secret_action)
     end
 
+    def no_match(_conn, %{"no" => "match"}) do
+      raise "Shouldn't have matched"
+    end
+
+    def non_top_level_function_clause_error(conn, params) do
+      send_resp(conn, :ok, trigger_func_clause_error(params))
+    end
+
+    defp trigger_func_clause_error(%{"no" => "match"}), do: :nomatch
+
     defp do_halt(conn, _), do: halt(conn)
 
     defp prepend(conn, val) do
       update_in conn.private.stack, &[val|&1]
     end
   end
+
+  defmodule ActionController do
+    use Phoenix.Controller
+
+    def action(conn, _) do
+      apply(__MODULE__, conn.private.phoenix_action, [conn, conn.body_params,
+                                                      conn.query_params])
+    end
+
+    def show(conn, _, _), do: text(conn, "show")
+
+    def no_match(_conn, _, %{"no" => "match"}) do
+      raise "Shouldn't have matched"
+    end
+  end
+
 
   setup do
     Logger.disable(self())
@@ -60,6 +86,28 @@ defmodule Phoenix.Controller.PipelineTest do
            |> MyController.call(:create)
     assert view_module(conn) == Hello
     assert layout(conn) == false
+  end
+
+  test "transforms top-level function clause errors into Phoenix.ActionClauseError" do
+    assert_raise Phoenix.ActionClauseError, fn ->
+      MyController.call(stack_conn(), :no_match)
+    end
+  end
+
+  test "does not transform function clause errors lower in action stack" do
+    assert_raise FunctionClauseError, fn ->
+      MyController.call(stack_conn(), :non_top_level_function_clause_error)
+    end
+  end
+
+  test "action/2 is overridable and still wraps function clause transforms" do
+    conn = ActionController.call(stack_conn(), :show)
+    assert conn.status == 200
+    assert conn.resp_body == "show"
+
+    assert_raise Phoenix.ActionClauseError, fn ->
+      ActionController.call(stack_conn(), :no_match)
+    end
   end
 
   defp stack_conn() do

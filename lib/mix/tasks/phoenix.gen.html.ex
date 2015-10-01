@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.Phoenix.Gen.Html do
   use Mix.Task
 
-  @shortdoc "Generates controller, model and views for an HTML-based resource"
+  @shortdoc "Generates controller, model and views for an HTML based resource"
 
   @moduledoc """
   Generates a Phoenix resource.
@@ -32,17 +32,15 @@ defmodule Mix.Tasks.Phoenix.Gen.Html do
     binding = Mix.Phoenix.inflect(singular)
     path    = binding[:path]
     route   = String.split(path, "/") |> Enum.drop(-1) |> Kernel.++([plural]) |> Enum.join("/")
-    binding = binding ++ [plural: plural, route: route,
-                          inputs: inputs(attrs), params: Mix.Phoenix.params(attrs)]
+    binding = binding ++ [plural: plural, route: route, attrs: attrs,
+                          inputs: inputs(attrs), params: Mix.Phoenix.params(attrs),
+                          template_singular: String.replace(binding[:singular], "_", " "),
+                          template_plural: String.replace(plural, "_", " ")]
 
     Mix.Phoenix.check_module_name_availability!(binding[:module] <> "Controller")
     Mix.Phoenix.check_module_name_availability!(binding[:module] <> "View")
 
-    if opts[:model] != false do
-      Mix.Task.run "phoenix.gen.model", args
-    end
-
-    Mix.Phoenix.copy_from source_dir, "", binding, [
+    Mix.Phoenix.copy_from paths(), "priv/templates/phoenix.gen.html", "", binding, [
       {:eex, "controller.ex",       "web/controllers/#{path}_controller.ex"},
       {:eex, "edit.html.eex",       "web/templates/#{path}/edit.html.eex"},
       {:eex, "form.html.eex",       "web/templates/#{path}/form.html.eex"},
@@ -53,7 +51,7 @@ defmodule Mix.Tasks.Phoenix.Gen.Html do
       {:eex, "controller_test.exs", "test/controllers/#{path}_controller_test.exs"},
     ]
 
-    Mix.shell.info """
+    instructions = """
 
     Add the resource to your browser scope in web/router.ex:
 
@@ -61,19 +59,20 @@ defmodule Mix.Tasks.Phoenix.Gen.Html do
     """
 
     if opts[:model] != false do
-      Mix.shell.info """
-      and then update your repository by running migrations:
-
-          $ mix ecto.migrate
-      """
+      Mix.Task.run "phoenix.gen.model", ["--instructions", instructions|args]
+    else
+      Mix.shell.info instructions
     end
   end
 
   defp validate_args!([_, plural | _] = args) do
-    if String.contains?(plural, ":") do
-      raise_with_help
-    else
-      args
+    cond do
+      String.contains?(plural, ":") ->
+        raise_with_help
+      plural != Phoenix.Naming.underscore(plural) ->
+        Mix.raise "expected the second argument, #{inspect plural}, to be all lowercase using snake_case convention"
+      true ->
+        args
     end
   end
 
@@ -92,41 +91,37 @@ defmodule Mix.Tasks.Phoenix.Gen.Html do
 
   defp inputs(attrs) do
     Enum.map attrs, fn
-      {k, {:array, _}} ->
-        {k, nil, nil}
-      {k, :belongs_to} ->
-        {k, ~s(<%= number_input f, #{inspect(k)}_id, class: "form-control" %>), label(k, :belongs_to)}
+      {_, {:array, _}} ->
+        {nil, nil}
+      {_, {:references, _}} ->
+        {nil, nil}
       {k, :integer}    ->
-        {k, ~s(<%= number_input f, #{inspect(k)}, class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= number_input f, #{inspect(k)}, class: "form-control" %>)}
       {k, :float}      ->
-        {k, ~s(<%= number_input f, #{inspect(k)}, step: "any", class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= number_input f, #{inspect(k)}, step: "any", class: "form-control" %>)}
       {k, :decimal}    ->
-        {k, ~s(<%= number_input f, #{inspect(k)}, step: "any", class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= number_input f, #{inspect(k)}, step: "any", class: "form-control" %>)}
       {k, :boolean}    ->
-        {k, ~s(<%= checkbox f, #{inspect(k)}, class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= checkbox f, #{inspect(k)}, class: "form-control" %>)}
       {k, :text}       ->
-        {k, ~s(<%= textarea f, #{inspect(k)}, class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= textarea f, #{inspect(k)}, class: "form-control" %>)}
       {k, :date}       ->
-        {k, ~s(<%= date_select f, #{inspect(k)}, class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= date_select f, #{inspect(k)}, class: "form-control" %>)}
       {k, :time}       ->
-        {k, ~s(<%= time_select f, #{inspect(k)}, class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= time_select f, #{inspect(k)}, class: "form-control" %>)}
       {k, :datetime}   ->
-        {k, ~s(<%= datetime_select f, #{inspect(k)}, class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= datetime_select f, #{inspect(k)}, class: "form-control" %>)}
       {k, _}           ->
-        {k, ~s(<%= text_input f, #{inspect(k)}, class: "form-control" %>), label(k)}
+        {label(k), ~s(<%= text_input f, #{inspect(k)}, class: "form-control" %>)}
     end
   end
 
   defp label(key) do
     label_text = Phoenix.Naming.humanize(key)
-    ~s(<%= label f, #{inspect(key)}, "#{label_text}" %>)
-  end
-  defp label(key, :belongs_to) do
-    label_text = Phoenix.Naming.humanize(Atom.to_string(key) <> "_id")
-    ~s(<%= label f, #{inspect(key)}_id, "#{label_text}" %>)
+    ~s(<%= label f, #{inspect(key)}, "#{label_text}", class: "control-label" %>)
   end
 
-  defp source_dir do
-    Application.app_dir(:phoenix, "priv/templates/html")
+  defp paths do
+    [".", :phoenix]
   end
 end

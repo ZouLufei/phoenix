@@ -13,15 +13,25 @@ defmodule Phoenix.ChannelTest do
   To get started, define the module attribute `@endpoint`
   in your test case pointing to your application endpoint.
 
-  Then you can directly `subscribe_and_join/3` topics and
-  channels:
+  Then you can directly create a socket and
+  `subscribe_and_join/4` topics and channels:
 
       {:ok, _, socket} =
-        subscribe_and_join(RoomChannel, "rooms:lobby", %{"id" => 3})
+        socket("user:id", %{some_assigns: 1})
+        |> subscribe_and_join(RoomChannel, "rooms:lobby", %{"id" => 3})
 
-  The function above will subscribe the current test process
-  to the "rooms:lobby" topic and start a channel in another
-  process. It returns `{:ok, reply, socket}` or `{:error, reply}`.
+  You usually want to set the same ID and assigns your
+  `UserSocket.connect/2` callback would set. Alternatively,
+  you can use the `connect/3` helper to call your `UserSocket.connect/2`
+  callback and initialize the socket with the socket id:
+
+      {:ok, socket} = connect(UserSocket, %{"some" => "params"})
+      {:ok, _, socket} = subscribe_and_join(socket, "rooms:lobby", %{"id" => 3})
+
+  Once called, `subscribe_and_join/4` will subscribe the
+  current test process to the "rooms:lobby" topic and start a
+  channel in another process. It returns `{:ok, reply, socket}`
+  or `{:error, reply}`.
 
   Now, in the same way the channel has a socket representing
   communication it will push to the client. Our test has a
@@ -68,7 +78,7 @@ defmodule Phoenix.ChannelTest do
   Imagine the following `handle_in/3` inside a channel:
 
       def handle_in("publish", %{"id" => id}, socket) do
-        Repo.get!(Post, id) |> Post.publish() |> Repo.update()
+        Repo.get!(Post, id) |> Post.publish() |> Repo.update!()
         {:noreply, socket}
       end
 
@@ -85,7 +95,7 @@ defmodule Phoenix.ChannelTest do
   channel to send replies:
 
       def handle_in("publish", %{"id" => id}, socket) do
-        Repo.get!(Post, id) |> Post.publish() |> Repo.update()
+        Repo.get!(Post, id) |> Post.publish() |> Repo.update!()
         {:reply, :ok, socket}
       end
 
@@ -127,7 +137,27 @@ defmodule Phoenix.ChannelTest do
 
   alias Phoenix.Socket
   alias Phoenix.Socket.Message
+  alias Phoenix.Socket.Broadcast
+  alias Phoenix.Socket.Reply
+  alias Phoenix.Socket.Transport
   alias Phoenix.Channel.Server
+
+  defmodule NoopSerializer do
+    @behaviour Phoenix.Transports.Serializer
+    @moduledoc false
+
+    def fastlane!(%Broadcast{} = msg) do
+      %Message{
+        topic: msg.topic,
+        event: msg.event,
+        payload: msg.payload
+      }
+    end
+
+    def encode!(%Reply{} = reply), do: reply
+    def encode!(%Message{} = msg), do: msg
+    def decode!(message, _opts), do: message
+  end
 
   @doc false
   defmacro __using__(_) do
@@ -136,6 +166,107 @@ defmodule Phoenix.ChannelTest do
     end
   end
 
+  @doc """
+  Builds a socket.
+
+  The socket is then used to subscribe and join channels.
+  Use this function when you want to create a blank socket
+  to pass to functions like `UserSocket.connect/2`.
+
+  Otherwise, use `socket/2` if you want to build a socket with
+  id and assigns.
+
+  The socket endpoint is read from the `@endpoint` variable.
+  """
+  defmacro socket() do
+    if endpoint = Module.get_attribute(__CALLER__.module, :endpoint) do
+      quote do
+        %Socket{serializer: NoopSerializer,
+                transport_pid: self(),
+                endpoint: unquote(endpoint),
+                pubsub_server: unquote(endpoint).__pubsub_server__(),
+                transport: unquote(__MODULE__),
+                transport_name: :channel_test}
+      end
+    else
+      raise "module attribute @endpoint not set for socket/0"
+    end
+  end
+
+  @doc """
+  Builds a socket with given id and assigns.
+
+  The socket endpoint is read from the `@endpoint` variable.
+  """
+  defmacro socket(id, assigns) do
+    if endpoint = Module.get_attribute(__CALLER__.module, :endpoint) do
+      quote do
+        %Socket{serializer: NoopSerializer,
+                transport_pid: self(),
+                endpoint: unquote(endpoint),
+                pubsub_server: unquote(endpoint).__pubsub_server__(),
+                id: unquote(id),
+                assigns: Enum.into(unquote(assigns), %{}),
+                transport: unquote(__MODULE__),
+                transport_name: :channel_test}
+      end
+    else
+      raise "module attribute @endpoint not set for socket/2"
+    end
+  end
+
+  @doc """
+  Initiates a transport connection for the socket handler.
+
+  Useful for testing UserSocket authentication. Returns
+  the result of the handler's `connect/2` callback.
+  """
+  defmacro connect(handler, params) do
+    if endpoint = Module.get_attribute(__CALLER__.module, :endpoint) do
+      quote do
+        Transport.connect(unquote(endpoint), unquote(handler), :channel_test,
+                          unquote(__MODULE__), NoopSerializer, unquote(params))
+      end
+    else
+      raise "module attribute @endpoint not set for socket/2"
+    end
+  end
+
+  @doc "See `subscribe_and_join!/4`."
+  def subscribe_and_join!(%Socket{} = socket, topic) when is_binary(topic) do
+    subscribe_and_join!(socket, topic, %{})
+  end
+  @doc "See `subscribe_and_join!/4`."
+  def subscribe_and_join!(%Socket{} = socket, topic, payload)
+      when is_binary(topic) and is_map(payload) do
+    channel = match_topic_to_channel!(socket, topic)
+    subscribe_and_join!(socket, channel, topic, payload)
+  end
+  @doc """
+  Same as `subscribe_and_join/4` but returns either the socket
+  or throws an error.
+
+  This is helpful when you are not testing joining the channel
+  and just need the socket.
+  """
+  def subscribe_and_join!(%Socket{} = socket, channel, topic, payload \\ %{})
+      when is_atom(channel) and is_binary(topic) and is_map(payload) do
+    case subscribe_and_join(socket, channel, topic, payload) do
+      {:ok, _, socket} -> socket
+      {:error, error}  -> raise "could not join channel, got error: #{inspect(error)}"
+    end
+  end
+
+  @doc "See `subscribe_and_join/4`."
+  def subscribe_and_join(%Socket{} = socket, topic) when is_binary(topic) do
+    subscribe_and_join(socket, topic, %{})
+  end
+  @doc "See `subscribe_and_join/4`."
+  def subscribe_and_join(%Socket{} = socket, topic, payload)
+      when is_binary(topic) and is_map(payload) do
+    channel = match_topic_to_channel!(socket, topic)
+    subscribe_and_join(socket, channel, topic, payload)
+  end
   @doc """
   Subscribes to the given topic and joins the channel
   under the given topic and payload.
@@ -147,32 +278,27 @@ defmodule Phoenix.ChannelTest do
   The given channel is joined in a separate process which is
   linked to the test process.
 
+  If no channel module is provided, the socket's handler is used to
+  lookup the matching channel for the given topic.
+
   It returns `{:ok, reply, socket}` or `{:error, reply}`.
-
-  The endpoint is read from the `@endpoint` variable.
   """
-  defmacro subscribe_and_join(channel, topic, payload \\ Macro.escape(%{})) do
-    quote do
-      subscribe_and_join(@endpoint, unquote(channel), unquote(topic), unquote(payload))
-    end
+  def subscribe_and_join(%Socket{} = socket, channel, topic, payload \\ %{})
+      when is_atom(channel) and is_binary(topic) and is_map(payload) do
+    socket.endpoint.subscribe(self(), topic)
+    join(socket, channel, topic, payload)
   end
 
-  @doc """
-  Subscribes to the given topic and joins the channel powered
-  by the pubsub server in endpoint under the given topic and
-  payload.
-
-  This is useful when you need to join a channel in different
-  enpoints, in practice, `subscribe_and_join/3` is recommended.
-  """
-  def subscribe_and_join(endpoint, channel, topic, payload) do
-    unless endpoint do
-      raise "module attribute @endpoint not set for subscribe_and_join/3"
-    end
-    endpoint.subscribe(self(), topic)
-    join(endpoint, channel, topic, payload)
+  @doc "See `join/4`."
+  def join(%Socket{} = socket, topic) when is_binary(topic) do
+    join(socket, topic, %{})
   end
-
+  @doc "See `join/4`."
+  def join(%Socket{} = socket, topic, payload)
+      when is_binary(topic) and is_map(payload) do
+    channel = match_topic_to_channel!(socket, topic)
+    join(socket, channel, topic, payload)
+  end
   @doc """
   Joins the channel under the given topic and payload.
 
@@ -180,37 +306,14 @@ defmodule Phoenix.ChannelTest do
   which is linked to the test process.
 
   It returns `{:ok, reply, socket}` or `{:error, reply}`.
-
-  The endpoint is read from the `@endpoint` variable.
   """
-  defmacro join(channel, topic, payload \\ Macro.escape(%{})) do
-    quote do
-      join(@endpoint, unquote(channel), unquote(topic), unquote(payload))
-    end
-  end
-
-  @doc """
-  Joins the channel powered by the pubsub server in
-  endpoint under the given topic and payload.
-
-  This is useful when you need to join a channel in
-  different enpoints, in practice, `join/3` is recommended.
-  """
-  def join(endpoint, channel, topic, payload) do
-    unless endpoint do
-      raise "module attribute @endpoint not set for join/3"
-    end
-
-    socket = %Socket{transport_pid: self(),
-                     endpoint: endpoint,
-                     pubsub_server: endpoint.__pubsub_server__(),
-                     topic: topic,
-                     channel: channel,
-                     transport: __MODULE__}
+  def join(%Socket{} = socket, channel, topic, payload \\ %{})
+      when is_atom(channel) and is_binary(topic) and is_map(payload) do
+    socket = %Socket{socket | topic: topic, channel: channel}
 
     case Server.join(socket, payload) do
       {:ok, reply, pid} ->
-        {:ok, reply, %{socket | channel_pid: pid, joined: true}}
+        {:ok, reply, Server.socket(pid)}
       {:error, _} = error ->
         error
     end
@@ -238,9 +341,7 @@ defmodule Phoenix.ChannelTest do
   Emulates the client leaving the channel.
   """
   def leave(socket) do
-    ref = make_ref()
-    Server.leave(socket.channel_pid, ref)
-    ref
+    push(socket, "phx_leave", %{})
   end
 
   @doc """
@@ -293,8 +394,9 @@ defmodule Phoenix.ChannelTest do
   """
   defmacro assert_push(event, payload, timeout \\ 100) do
     quote do
-      assert_receive %Phoenix.Socket.Message{event: unquote(event),
-                                             payload: unquote(payload)}, unquote(timeout)
+      assert_receive %Phoenix.Socket.Message{
+                        event: unquote(event),
+                        payload: unquote(payload)}, unquote(timeout)
     end
   end
 
@@ -315,8 +417,10 @@ defmodule Phoenix.ChannelTest do
   defmacro assert_reply(ref, status, payload \\ Macro.escape(%{}), timeout \\ 100) do
     quote do
       ref = unquote(ref)
-      assert_receive %Phoenix.Socket.Reply{status: unquote(status), ref: ^ref,
-                                           payload: unquote(payload)}, unquote(timeout)
+      assert_receive %Phoenix.Socket.Reply{
+                        ref: ^ref,
+                        status: unquote(status),
+                        payload: unquote(payload)}, unquote(timeout)
     end
   end
 
@@ -341,6 +445,23 @@ defmodule Phoenix.ChannelTest do
     quote do
       assert_receive %Phoenix.Socket.Broadcast{event: unquote(event),
                                                payload: unquote(payload)}, unquote(timeout)
+    end
+  end
+
+  defp match_topic_to_channel!(socket, topic) do
+    unless socket.handler do
+      raise """
+      No socket handler found to lookup channel for topic #{inspect topic}.
+      Use `connect/2` when calling `subscribe_and_join` without a channel, for example:
+
+          {:ok, socket} = connect(UserSocket, %{})
+          socket = subscribe_and_join!(socket, "foo:bar", %{})
+      """
+    end
+
+    case socket.handler.__channel__(topic, socket.transport_name) do
+      channel when is_atom(channel) -> channel
+      _ -> raise "no channel found for topic #{inspect topic} in #{inspect socket.handler}"
     end
   end
 end

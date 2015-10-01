@@ -18,14 +18,14 @@ defmodule Phoenix.Router.Scope do
   @doc """
   Builds a route based on the top of the stack.
   """
-  def route(module, verb, path, controller, action, opts) do
+  def route(module, kind, verb, path, plug, plug_opts, opts) do
     private = Keyword.get(opts, :private, %{})
     assigns = Keyword.get(opts, :assigns, %{})
-    as      = Keyword.get(opts, :as, Phoenix.Naming.resource_name(controller, "Controller"))
+    as      = Keyword.get(opts, :as, Phoenix.Naming.resource_name(plug, "Controller"))
 
     {path, host, alias, as, pipes, private, assigns} =
-      join(module, path, controller, as, private, assigns)
-    Phoenix.Router.Route.build(verb, path, host, alias, action, as, pipes, private, assigns)
+      join(module, path, plug, as, private, assigns)
+    Phoenix.Router.Route.build(kind, verb, path, host, alias, plug_opts, as, pipes, private, assigns)
   end
 
   @doc """
@@ -40,18 +40,6 @@ defmodule Phoenix.Router.Scope do
   """
   def pipe_through(module, pipes) do
     pipes = List.wrap(pipes)
-    available = get_pipes(module)
-
-    Enum.each pipes, fn pipe ->
-      cond do
-        pipe == :before ->
-          raise ArgumentError, "the :before pipeline is always piped through"
-        pipe in available ->
-          :ok
-        true ->
-          raise ArgumentError, "unknown pipeline #{inspect pipe}"
-      end
-    end
 
     update_stack(module, fn [scope|stack] ->
       scope = put_in scope.pipes, scope.pipes ++ pipes
@@ -154,10 +142,6 @@ defmodule Phoenix.Router.Scope do
 
   defp update_stack(module, fun) do
     update_attribute(module, @stack, fun)
-  end
-
-  defp get_pipes(module) do
-    get_attribute(module, @pipes)
   end
 
   defp update_pipes(module, fun) do

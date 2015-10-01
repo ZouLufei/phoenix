@@ -23,7 +23,7 @@ defmodule Mix.Tasks.Phoenix.NewTest do
       Mix.Tasks.Phoenix.New.run([@app_name])
 
       assert_file "photo_blog/README.md"
-      assert_file "photo_blog/mix.exs", fn(file) ->
+      assert_file "photo_blog/mix.exs", fn file ->
         assert file =~ "app: :photo_blog"
         refute file =~ "deps_path: \"../../deps\""
         refute file =~ "lockfile: \"../../mix.lock\""
@@ -31,6 +31,15 @@ defmodule Mix.Tasks.Phoenix.NewTest do
 
       assert_file "photo_blog/config/config.exs", fn file ->
         refute file =~ "app_namespace"
+        assert file =~ """
+        config :phoenix, :generators,
+          migration: true,
+          binary_id: false
+        """
+      end
+
+      assert_file "photo_blog/config/prod.exs", fn file ->
+        assert file =~ "port: 80"
       end
 
       assert_file "photo_blog/lib/photo_blog.ex", ~r/defmodule PhotoBlog do/
@@ -39,11 +48,9 @@ defmodule Mix.Tasks.Phoenix.NewTest do
       assert_file "photo_blog/test/controllers/page_controller_test.exs"
       assert_file "photo_blog/test/views/page_view_test.exs"
       assert_file "photo_blog/test/views/error_view_test.exs"
+      assert_file "photo_blog/test/views/layout_view_test.exs"
       assert_file "photo_blog/test/support/conn_case.ex"
       assert_file "photo_blog/test/test_helper.exs"
-
-      assert File.exists?("photo_blog/web/channels")
-      refute File.exists?("photo_blog/web/channels/.keep")
 
       assert_file "photo_blog/web/controllers/page_controller.ex",
                   ~r/defmodule PhotoBlog.PageController/
@@ -54,50 +61,71 @@ defmodule Mix.Tasks.Phoenix.NewTest do
       assert_file "photo_blog/web/views/page_view.ex",
                   ~r/defmodule PhotoBlog.PageView/
 
-      assert_file "photo_blog/web/router.ex", ~r/defmodule PhotoBlog.Router/
-      assert_file "photo_blog/web/web.ex", ~r/defmodule PhotoBlog.Web/
+      assert_file "photo_blog/web/router.ex", "defmodule PhotoBlog.Router"
+      assert_file "photo_blog/web/web.ex", "defmodule PhotoBlog.Web"
 
       # Brunch
-      assert_file "photo_blog/.gitignore", ~r"/node_modules"
+      assert_file "photo_blog/.gitignore", "/node_modules"
+      assert_file "photo_blog/brunch-config.js", ~s["deps/phoenix/web/static"]
+      assert_file "photo_blog/config/dev.exs", "watchers: [node:"
+      assert_file "photo_blog/web/static/assets/favicon.ico"
       assert_file "photo_blog/web/static/assets/images/phoenix.png"
-      assert_file "photo_blog/web/static/assets/images/favicon.ico"
-      assert_file "photo_blog/web/static/vendor/phoenix.js"
-      assert_file "photo_blog/web/static/js/app.js"
-      assert_file "photo_blog/web/static/css/app.scss"
-      assert_file "photo_blog/config/dev.exs", ~r/watchers: \[node:/
-      assert File.read!("photo_blog/web/templates/layout/app.html.eex") |> String.contains?(~s{require("web/static/js/app")})
+      assert_file "photo_blog/web/static/css/app.css"
+      assert_file "photo_blog/web/static/js/app.js",
+                  ~s[import socket from "./socket"]
+      assert_file "photo_blog/web/static/js/socket.js",
+                  ~s[import {Socket} from "deps/phoenix/web/static/js/phoenix"]
 
       refute File.exists? "photo_blog/priv/static/css/app.css"
       refute File.exists? "photo_blog/priv/static/js/phoenix.js"
       refute File.exists? "photo_blog/priv/static/js/app.js"
 
+      assert File.exists?("photo_blog/web/static/vendor")
+      refute File.exists?("photo_blog/web/static/vendor/.keep")
+
       # Ecto
       config = ~r/config :photo_blog, PhotoBlog.Repo,/
-      assert_file "photo_blog/mix.exs", ~r"{:phoenix_ecto,"
+      assert_file "photo_blog/mix.exs", fn file ->
+        assert file =~ "{:phoenix_ecto,"
+        assert file =~ "aliases: aliases"
+        assert file =~ "ecto.setup"
+        assert file =~ "ecto.reset"
+      end
       assert_file "photo_blog/config/dev.exs", config
       assert_file "photo_blog/config/test.exs", config
       assert_file "photo_blog/config/prod.secret.exs", config
       assert_file "photo_blog/lib/photo_blog/repo.ex", ~r"defmodule PhotoBlog.Repo"
+      assert_file "photo_blog/priv/repo/seeds.exs", ~r"PhotoBlog.Repo.insert!"
       assert_file "photo_blog/test/support/model_case.ex", ~r"defmodule PhotoBlog.ModelCase"
       assert_file "photo_blog/web/web.ex", ~r"alias PhotoBlog.Repo"
 
       # Install dependencies?
       assert_received {:mix_shell, :yes?, ["\nFetch and install dependencies?"]}
+
+      # Instructions
+      assert_received {:mix_shell, :info, ["\nWe are all set!" <> _ = msg]}
+      assert msg =~ "$ cd photo_blog"
+      assert msg =~ "$ mix ecto.create"
+      assert msg =~ "$ mix phoenix.server"
+
+      # Channels
+      assert File.exists?("photo_blog/web/channels")
+      refute File.exists?("photo_blog/web/channels/.keep")
+      assert_file "photo_blog/web/channels/user_socket.ex", ~r"defmodule PhotoBlog.UserSocket"
+      assert_file "photo_blog/lib/photo_blog/endpoint.ex", ~r"socket \"/socket\", PhotoBlog.UserSocket"
     end
   end
 
   test "new without defaults" do
     in_tmp "new without defaults", fn ->
-      Mix.Tasks.Phoenix.New.run([@app_name, "--no-brunch", "--no-ecto"])
+      Mix.Tasks.Phoenix.New.run([@app_name, "--no-html", "--no-brunch", "--no-ecto"])
 
       # No Brunch
       refute File.read!("photo_blog/.gitignore") |> String.contains?("/node_modules")
       assert_file "photo_blog/config/dev.exs", ~r/watchers: \[\]/
-      refute File.read!("photo_blog/web/templates/layout/app.html.eex") |> String.contains?(~s{require("web/static/js/app")})
-
       assert_file "photo_blog/priv/static/css/app.css"
+      assert_file "photo_blog/priv/static/favicon.ico"
       assert_file "photo_blog/priv/static/images/phoenix.png"
-      assert_file "photo_blog/priv/static/images/favicon.ico"
       assert_file "photo_blog/priv/static/js/phoenix.js"
       assert_file "photo_blog/priv/static/js/app.js"
 
@@ -106,10 +134,68 @@ defmodule Mix.Tasks.Phoenix.NewTest do
       refute File.exists?("photo_blog/lib/photo_blog/repo.ex")
 
       assert_file "photo_blog/mix.exs", &refute(&1 =~ ~r":phoenix_ecto")
+      assert_file "photo_blog/config/config.exs", &refute(&1 =~ "config :phoenix, :generators")
       assert_file "photo_blog/config/dev.exs", &refute(&1 =~ config)
       assert_file "photo_blog/config/test.exs", &refute(&1 =~ config)
       assert_file "photo_blog/config/prod.secret.exs", &refute(&1 =~ config)
       assert_file "photo_blog/web/web.ex", &refute(&1 =~ ~r"alias PhotoBlog.Repo")
+
+      # No HTML
+      assert File.exists?("photo_blog/test/controllers")
+      refute File.exists?("photo_blog/test/controllers/.keep")
+
+      assert File.exists?("photo_blog/web/controllers")
+      refute File.exists?("photo_blog/web/controllers/.keep")
+      assert File.exists?("photo_blog/web/views")
+      refute File.exists?("photo_blog/web/views/.keep")
+
+      refute File.exists? "photo_blog/test/controllers/pager_controller_test.exs"
+      refute File.exists? "photo_blog/test/views/layout_view_test.exs"
+      refute File.exists? "photo_blog/test/views/page_view_test.exs"
+      refute File.exists? "photo_blog/web/controllers/page_controller.ex"
+      refute File.exists? "photo_blog/web/templates/layout/app.html.eex"
+      refute File.exists? "photo_blog/web/templates/page/index.html.eex"
+      refute File.exists? "photo_blog/web/views/layout_view.ex"
+      refute File.exists? "photo_blog/web/views/page_view.ex"
+
+      assert_file "photo_blog/mix.exs", &refute(&1 =~ ~r":phoenix_html")
+      assert_file "photo_blog/mix.exs", &refute(&1 =~ ~r":phoenix_live_reload")
+      assert_file "photo_blog/lib/photo_blog/endpoint.ex",
+                  &refute(&1 =~ ~r"Phoenix.LiveReloader")
+      assert_file "photo_blog/lib/photo_blog/endpoint.ex",
+                  &refute(&1 =~ ~r"Phoenix.LiveReloader.Socket")
+      assert_file "photo_blog/web/views/error_view.ex", ~r".json"
+      assert_file "photo_blog/web/router.ex", &refute(&1 =~ ~r"pipeline :browser")
+    end
+  end
+
+  test "new with binary_id" do
+    in_tmp "new with binary_id", fn ->
+      Mix.Tasks.Phoenix.New.run([@app_name, "--binary-id"])
+
+      assert_file "photo_blog/web/web.ex", fn file ->
+        assert file =~ ~r/@primary_key {:id, :binary_id, autogenerate: true}/
+        assert file =~ ~r/@foreign_key_type :binary_id/
+      end
+
+      assert_file "photo_blog/config/config.exs", ~r/binary_id: true/
+    end
+  end
+
+  test "new with uppercase" do
+    in_tmp "new with uppercase", fn ->
+      Mix.Tasks.Phoenix.New.run(["photoBlog"])
+
+      assert_file "photoBlog/README.md"
+
+      assert_file "photoBlog/mix.exs", fn file ->
+        assert file =~ "app: :photoBlog"
+      end
+
+      assert_file "photoBlog/config/dev.exs", fn file ->
+        assert file =~ ~r/config :photoBlog, PhotoBlog.Repo,/
+        assert file =~ "database: \"photoblog_dev\""
+      end
     end
   end
 
@@ -137,6 +223,17 @@ defmodule Mix.Tasks.Phoenix.NewTest do
           assert file =~ "deps_path: \"../../deps\""
           assert file =~ "lockfile: \"../../mix.lock\""
         end
+
+        assert_file "photo_blog/brunch-config.js", fn(file) ->
+          assert file =~ ~s["../../deps/phoenix/web/static"]
+          assert file =~ ~s["../../deps/phoenix_html/web/static"]
+        end
+
+        assert_file "photo_blog/web/static/js/socket.js",
+                    ~s["../../../deps/phoenix/web/static/js/phoenix"]
+
+        assert_file "photo_blog/web/static/js/app.js",
+                    ~s["../../../deps/phoenix_html/web/static/js/phoenix_html"]
       end
     end
   end
@@ -150,6 +247,13 @@ defmodule Mix.Tasks.Phoenix.NewTest do
       assert_file "custom_path/config/dev.exs", [~r/Ecto.Adapters.MySQL/, ~r/username: "root"/, ~r/password: ""/]
       assert_file "custom_path/config/test.exs", [~r/Ecto.Adapters.MySQL/, ~r/username: "root"/, ~r/password: ""/]
       assert_file "custom_path/config/prod.secret.exs", [~r/Ecto.Adapters.MySQL/, ~r/username: "root"/, ~r/password: ""/]
+
+      assert_file "custom_path/test/support/conn_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+      assert_file "custom_path/test/support/channel_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+      assert_file "custom_path/test/support/model_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
     end
   end
 
@@ -162,6 +266,75 @@ defmodule Mix.Tasks.Phoenix.NewTest do
       assert_file "custom_path/config/dev.exs", ~r/Tds.Ecto/
       assert_file "custom_path/config/test.exs", ~r/Tds.Ecto/
       assert_file "custom_path/config/prod.secret.exs", ~r/Tds.Ecto/
+
+      assert_file "custom_path/test/support/conn_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+      assert_file "custom_path/test/support/channel_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+      assert_file "custom_path/test/support/model_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+    end
+  end
+
+  test "new with sqlite adapter" do
+    in_tmp "new with sqlite adapter", fn ->
+      project_path = Path.join(File.cwd!, "custom_path")
+      Mix.Tasks.Phoenix.New.run([project_path, "--database", "sqlite"])
+
+      assert_file "custom_path/mix.exs", ~r/:sqlite_ecto/
+
+      assert_file "custom_path/config/dev.exs", fn file ->
+        assert file =~ ~r/Sqlite.Ecto/
+        assert file =~ ~r/database: "db\/custom_path_dev.sqlite"/
+      end
+
+      assert_file "custom_path/config/test.exs", fn file ->
+        assert file =~ ~r/Sqlite.Ecto/
+        assert file =~ ~r/database: "db\/custom_path_test.sqlite"/
+      end
+
+      assert_file "custom_path/config/prod.secret.exs", fn file ->
+        assert file =~ ~r/Sqlite.Ecto/
+        assert file =~ ~r/database: "db\/custom_path_prod.sqlite"/
+      end
+
+      assert_file "custom_path/test/support/conn_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+      assert_file "custom_path/test/support/channel_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+      assert_file "custom_path/test/support/model_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+    end
+  end
+
+  test "new with mongodb adapter" do
+    in_tmp "new with mongodb adapter", fn ->
+      project_path = Path.join(File.cwd!, "custom_path")
+      Mix.Tasks.Phoenix.New.run([project_path, "--database", "mongodb"])
+
+      assert_file "custom_path/mix.exs", ~r/:mongodb_ecto/
+
+      assert_file "custom_path/config/dev.exs", ~r/Mongo.Ecto/
+      assert_file "custom_path/config/test.exs", [~r/Mongo.Ecto/, ~r/pool_size: 1/]
+      assert_file "custom_path/config/prod.secret.exs", ~r/Mongo.Ecto/
+
+      assert_file "custom_path/web/web.ex", fn file ->
+        assert file =~ ~r/@primary_key {:id, :binary_id, autogenerate: true}/
+        assert file =~ ~r/@foreign_key_type :binary_id/
+      end
+
+      assert_file "custom_path/test/test_helper.exs", fn file ->
+        refute file =~ ~r/Ecto.Adapters.SQL/
+      end
+
+      assert_file "custom_path/test/support/conn_case.ex", ~r/Mongo.Ecto.truncate/
+      assert_file "custom_path/test/support/model_case.ex", ~r/Mongo.Ecto.truncate/
+      assert_file "custom_path/test/support/channel_case.ex", ~r/Mongo.Ecto.truncate/
+
+      assert_file "custom_path/config/config.exs", fn file ->
+        assert file =~ ~r/binary_id: true/
+        assert file =~ ~r/migration: false/
+      end
     end
   end
 
@@ -171,9 +344,16 @@ defmodule Mix.Tasks.Phoenix.NewTest do
       Mix.Tasks.Phoenix.New.run([project_path])
 
       assert_file "custom_path/mix.exs", ~r/:postgrex/
-      assert_file "custom_path/config/dev.exs", [~r/Ecto.Adapters.Postgres/, ~r/username: "postgres"/, ~r/password: "postgres"/]
-      assert_file "custom_path/config/test.exs", [~r/Ecto.Adapters.Postgres/, ~r/username: "postgres"/, ~r/password: "postgres"/]
+      assert_file "custom_path/config/dev.exs", [~r/Ecto.Adapters.Postgres/, ~r/username: "postgres"/, ~r/password: "postgres"/, ~r/hostname: "localhost"/]
+      assert_file "custom_path/config/test.exs", [~r/Ecto.Adapters.Postgres/, ~r/username: "postgres"/, ~r/password: "postgres"/, ~r/hostname: "localhost"/]
       assert_file "custom_path/config/prod.secret.exs", [~r/Ecto.Adapters.Postgres/, ~r/username: "postgres"/, ~r/password: "postgres"/]
+
+      assert_file "custom_path/test/support/conn_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+      assert_file "custom_path/test/support/channel_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
+      assert_file "custom_path/test/support/model_case.ex",
+        ~r/Ecto.Adapters.SQL.restart_test_transaction/
     end
   end
 

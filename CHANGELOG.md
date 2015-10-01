@@ -1,13 +1,140 @@
 # Changelog
 
-## v0.14.0-dev
+## 1.0.3 (2015-9-28)
+
+* Enhancements
+  * [Controller] Transform FunctionClauseError's from controller actions into ActionClauseError, and send 400 response
+  * [Router] Allow plugs to be passed to `pipe_through`
+  * [Channel] WebSocket transport now sends server heartbeats and shutdowns if client heartbeats stop. Fixes timeout issues when clients keep connection open, but hang with suspended js runtimes
+
+* JavaScript client deprecations
+  * Passing params to socket.connect() has been deprecated in favor of the `:params` option of the Socket constructor
+
+## 1.0.2 (2015-9-6)
+
+* Enhancements
+  * [Installer] Support `--database mongodb` when generating new apps
+  * [Installer] Support `binary_id` and `migration` configuration for models
+
+* Bug fixes
+  * [Digest] Ensure Phoenix app is loaded before digesting
+  * [Generator] Ensure proper keys are generated in JSON views and tests
+  * [Generator] Ensure proper titles are generated in HTML views and tests
+  * [Mix] Ensure app is compiled before showing routes with `mix phoenix.routes`
+  * [Token] Ensure max age is counted in seconds and not in miliseconds
+
+## 1.0.1 (2015-9-3)
+
+* Enhancements
+  * [Controller] `phoenix.gen.json` generator now excludes `:new` and `:edit` actions
+  * [Endpoint] Set hostname to "localhost" by default for dev and test
+  * [ConnTest] Support multiple json mime types in `json_response/2`
+
+## 1.0.0 (2015-8-28) 🚀
+
+## v0.17.1 (2015-8-26)
+
+* Enhancements
+  * [ChannelTest] Add `connect/2` helper for test UserSocket handlers
+  * [Endpoint] Expose `struct_url/0` in the endpoint that returns the URL as struct for further manipulation
+  * [Router] Allow `URI` structs to be given to generated `url/1` and `path/2` helpers
+
+* Bug fixes
+  * [Endpoint] Pass port configuration when configuring force_ssl
+  * [Mix] By default include all attributes in generated JSON views
+  * [Router] Fix `pipe_through` not respecting halting when piping through mulitple pipelines
+
+## v0.17.0 (2015-8-19)
+
+See these [`0.16.x` to `0.17.0` upgrade instructions](https://gist.github.com/chrismccord/ee5ae90b949a9768b871) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Endpoint] Allow `check_origin` and `force_ssl` to be config in transports and fallback to endpoint config
+  * [Transport] Log when `check_origin` fails
+
+* Bug fixes
+  * [Mix] Properly humanize names in the generator
+
+* Deprecations
+  * [Endpoint] `render_errors: [default_format: "html"]` is deprecated in favor of `render_errors: [accepts: ["html"]]`
+
+* Backward incompatible changes
+  * [Controller] The "format" param for overriding the accept header has been renamed to "_format" and is no longer injected into the params when parsing the Accept headers. Use `get_format/1` to access the negotiated format.
+  * [ChannelTest] In order to test channels, one must now explicitly create a socket and pass it to `subscribe_and_join`. For example, `subscribe_and_join(MyChannel, "my_topic")` should now become `socket() |> subscribe_and_join(MyChannel, "my_topic")` or `socket("user:id", %{user_id: 13}) |> subscribe_and_join(MyChannel, "my_topic")`.
+
+## v0.16.1 (2015-8-6)
+
+* JavaScript client bug fixes
+  * Pass socket params on reconnect
+
+## v0.16.0 (2015-8-5)
+
+See these [`0.15.x` to `0.16.0` upgrade instructions](https://gist.github.com/chrismccord/969d75d1562979a3ae37) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Brunch] No longer ship with `sass-brunch` dependency
+  * [Endpoint] Add `force_ssl` support
+  * [Mix] Allow `phoenix.gen.*` tasks templates to be customized by the target application by placing copies at `priv/template/phoenix.gen.*`
+  * [Mix] Support `mix phoenix.gen.model Comment comment post_id:references:posts`
+  * [Mix] Add `mix phoenix.gen.secret`
+  * [Router] Provide `put_secure_browser_headers/2` and use it by default in the browser pipeline
+  * [Socket] Automatically check origins on socket transports
+  * [Token] Add `Phoenix.Token` for easy signing and verification of tokens
+
+* Bug fixes
+  * [Cowboy] Ensure we print proper URL when starting the server with both http and https
+  * [Digest] Do not gzip binary files like png and jpg. Default only to known text files and make them configurable via `config :phoenix, :gzippable_exts, ~w(.txt .html .js .css)` and so on
+
+* Backward incompatible changes
+  * [Controller] `jsonp/3` function has been removed in favor of the `plug :allow_jsonp`
+  * [Controller] `controller_template/1` has been renamed to `view_template/1`
+  * [HTML] Use `phoenix_html ~> 2.0` which includes its own `phoenix_html.js` version
+  * [Socket] `:origins` transport option has been renamed to `:check_origin`
+  * [View] `render_one` and `render_many` no longer inflect the view module from the model in favor of explicitly passing the view
+
+* JavaScript client backwards incompatible changes
+  * Socket params are now passed to `socket.connect()` instead of an option on the constructor.
+  * Socket params are no longer merged as default params for channel params. Use `connect/2` on the server to wire up default channel assigns.
+  * Socket `chan` has been renamed to `channel`, for example `socket.channel("some:topic")`
+
+## v0.15.0 (2015-7-27)
+
+See these [`0.14.x` to `0.15.0` upgrade instructions](https://gist.github.com/chrismccord/931373940f320bf41a50) to bring your existing apps up to speed.
+
+* Enhancements
+  * [Socket] Introduce `Phoenix.Socket` behaviour that allows socket authentication, termination, and default channel socket assigns
+  * [PubSub] Use ETS dispatch table for increased broadcast performance
+  * [Channel] Use event intercept for increased broadcast performance
+
+* Backward incompatible changes
+  * [Router] channel routes are now defined on a socket handler module instead of the Router
+  * [Router] `socket` mounts have been moved from the Router to the Endpoint
+  * [Channel] `handle_out` callbacks now require explicit event intercept for callback to be invoked, with `Phoenix.Channel.intercept/1`
+  * [Transports] WebSocket and LongPoll transport configuration has been moved from mix config to the UserSocket
+
+* JavaScript client backwards incompatible changes
+  * `Phoenix.LongPoller` has been renamed to `Phoenix.LongPoll`
+  * A new client version is required to   accommodate server changes
+
+## v0.14.0 (2015-06-29)
+
+See these [`0.13.x` to `0.14.0` upgrade instructions](https://gist.github.com/chrismccord/57805158f463d3369103) to bring your existing apps up to speed.
 
 * Enhancements
   * [Phoenix.HTML] Update to phoenix_html 1.1.0 which raises on missing assigns
   * [Controller] Add `jsonp/2` for handling JSONP responses
+  * [Channel] Enhance logging with join information
+  * [Router] Add `forward` macro to forward a requests to a Plug, invoking the pipeline
 
 * Javascript client enhancements
   * Add socket params to apply default, overridable params to all channel params.
+  * Enchance logging
+
+* Bug fixes
+  * [Channel] Fix xdomain content type not being treated as JSON requests
+
+* Javascript client backwards incompatible changes
+  * `logger` option to `Phoenix.Socket`, now uses three arguments, ie: `logger: (kind, msg, data) => { console.log(`${kind}: ${msg}`, data) }`
 
 * Backward incompatible changes
   * [Controller] `plug :action` is now called automatically

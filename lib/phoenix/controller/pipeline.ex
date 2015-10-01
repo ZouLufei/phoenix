@@ -114,19 +114,23 @@ defmodule Phoenix.Controller.Pipeline do
   @doc false
   defmacro __before_compile__(env) do
     action = {:action, [], true}
-    plugs  = Module.get_attribute(env.module, :plugs)
+    plugs  = [action|Module.get_attribute(env.module, :plugs)]
+    {conn, body} = Plug.Builder.compile(env, plugs, log_on_halt: :debug)
 
-    plugs =
-      if action in plugs do
-        IO.puts :stderr, "[deprecated] plug :action is no longer required in controllers, " <>
-                         "please remove it from #{inspect env.module}"
-        plugs
-      else
-        [action|plugs]
+    quote do
+      defoverridable [action: 2]
+
+      def action(conn, opts) do
+        try do
+          super(conn, opts)
+        catch
+          kind, reason ->
+            Phoenix.Controller.Pipeline.__catch__(
+              kind, reason, __MODULE__, conn.private.phoenix_action, System.stacktrace
+            )
+        end
       end
 
-    {conn, body} = Plug.Builder.compile(env, plugs, log_on_halt: :debug)
-    quote do
       defp phoenix_controller_pipeline(unquote(conn), var!(action)) do
         var!(conn) = unquote(conn)
         var!(controller) = __MODULE__
@@ -137,6 +141,16 @@ defmodule Phoenix.Controller.Pipeline do
         unquote(body)
       end
     end
+  end
+
+  @doc false
+  def __catch__(:error, :function_clause, controller, action,
+                [{controller, action, [%Plug.Conn{} | _], _loc} | _] = stack) do
+    args = [controller: controller, action: action]
+    reraise Phoenix.ActionClauseError, args, stack
+  end
+  def __catch__(kind, reason, _controller, _action, stack) do
+    :erlang.raise(kind, reason, stack)
   end
 
   @doc """

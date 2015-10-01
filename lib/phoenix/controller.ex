@@ -89,6 +89,32 @@ defmodule Phoenix.Controller do
 
     * `:log` - the level to log. When false, disables controller
       logging
+
+  ## Overriding `action/2` for custom arguments
+
+  Phoenix injects an `action/2` plug in your controller which calls the
+  function matched from the router. By default, it passes the conn and params.
+  In some cases, overriding the `action/2` plug in your controller is a
+  useful way to inject certain argument to your actions that you
+  would otherwise need to fetch off the connection repeatedly. For example,
+  imagine if you stored a `conn.assigns.current_user` in the connection
+  and wanted quick access to the user for every action in your controller:
+
+      def action(conn, _) do
+        apply(__MODULE__, action_name(conn), [conn,
+                                              conn.params,
+                                              conn.assigns.current_user])
+      end
+
+      def index(conn, _params, user) do
+        videos = Repo.all(user_videos(user))
+        # ...
+      end
+
+      def delete(conn, %{"id" => id}, user) do
+        video = Repo.get!(user_videos(user), id)
+        # ...
+      end
   """
   defmacro __using__(opts) do
     quote bind_quoted: [opts: opts] do
@@ -128,10 +154,11 @@ defmodule Phoenix.Controller do
   def endpoint_module(conn), do: conn.private.phoenix_endpoint
 
   @doc """
-  Returns the template name rendered from the controller as a string
+  Returns the template name rendered in the view as a string
+  (or nil if no template was rendered).
   """
-  @spec controller_template(Plug.Conn.t) :: binary
-  def controller_template(conn), do: conn.private[:phoenix_template]
+  @spec view_template(Plug.Conn.t) :: binary | nil
+  def view_template(conn), do: conn.private[:phoenix_template]
 
   defp get_json_encoder do
     Application.get_env(:phoenix, :format_encoders)
@@ -157,43 +184,59 @@ defmodule Phoenix.Controller do
   end
 
   @doc """
-  Sends a JSON response with JSONP callback support.
+  A plug that may convert a JSON response into a JSONP one.
 
-  It uses the configured `:format_encoders` under the `:phoenix`
-  application for `:json` to pick up the encoder module.
+  In case a JSON response is returned, it will be converted
+  to a JSONP as long as the callback field is present in
+  the query string. The callback field itself defaults to
+  "callback" but may be configured with the callback option.
 
-  If the query params contain a key for the callback name, the
-  response body is wrapped in an invocation of this callback.
-
-  The default key for the callback name is `"callback"`. It can be
-  overridden with the `:callback` option and is expected to be a
-  string.
+  In case there is no callback or the response is not encoded
+  in JSON format, it is a no-op.
 
   Only alphanumeric characters and underscore are allowed in the
   callback name. Otherwise an exception is raised.
 
   ## Examples
 
-      iex> jsonp conn, %{id: 123}, callback: "cb"
+      # Will convert JSON to JSONP if callback=someFunction is given
+      plug :allow_jsonp
+
+      # Will convert JSON to JSONP if cb=someFunction is given
+      plug :allow_jsonp, callback: "cb"
 
   """
-  @spec jsonp(Plug.Conn.t, term, Keyword.t) :: Plug.Conn.t
-  def jsonp(conn, data, opts \\ []) do
-    case Map.fetch(conn.query_params, opts[:callback] || "callback") do
-      :error    -> json conn, data
-      {:ok, ""} -> json conn, data
+  @spec allow_jsonp(Plug.Conn.t, Keyword.t) :: Plug.Conn.t
+  def allow_jsonp(conn, opts \\ []) do
+    callback = Keyword.get(opts, :callback, "callback")
+    case Map.fetch(conn.query_params, callback) do
+      :error    -> conn
+      {:ok, ""} -> conn
       {:ok, cb} ->
         validate_jsonp_callback!(cb)
+        register_before_send(conn, fn conn ->
+          if json_response?(conn) do
+            conn
+            |> put_resp_header("content-type", "application/javascript")
+            |> resp(conn.status, jsonp_body(conn.resp_body, cb))
+          else
+            conn
+          end
+        end)
+    end
+  end
 
-        send_resp(conn, conn.status || 200, "text/javascript", jsonp_body(data, cb))
+  defp json_response?(conn) do
+    case get_resp_header(conn, "content-type") do
+      ["application/json;" <> _] -> true
+      ["application/json"] -> true
+      _ -> false
     end
   end
 
   defp jsonp_body(data, callback) do
-    encoder = get_json_encoder()
     body =
       data
-      |> encoder.encode_to_iodata!()
       |> IO.iodata_to_binary()
       |> String.replace(<<0x2028::utf8>>, "\\u2028")
       |> String.replace(<<0x2029::utf8>>, "\\u2029")
@@ -206,7 +249,7 @@ defmodule Phoenix.Controller do
     do: validate_jsonp_callback!(t)
   defp validate_jsonp_callback!(<<>>), do: :ok
   defp validate_jsonp_callback!(_),
-    do: raise(ArgumentError, "the callback name contains invalid characters")
+    do: raise(ArgumentError, "the JSONP callback name contains invalid characters")
 
   @doc """
   Sends text response.
@@ -263,14 +306,18 @@ defmodule Phoenix.Controller do
     cond do
       to = opts[:to] ->
         case to do
-          "/" <> _ -> to
-          _        -> raise ArgumentError, "the :to option in redirect expects a path"
+          "//" <> _ -> raise_invalid_url()
+          "/" <> _  -> to
+          _         -> raise_invalid_url()
         end
       external = opts[:external] ->
         external
       true ->
         raise ArgumentError, "expected :to or :external option in redirect/2"
     end
+  end
+  defp raise_invalid_url do
+    raise ArgumentError, "the :to option in redirect expects a path"
   end
 
   @doc """
@@ -316,7 +363,8 @@ defmodule Phoenix.Controller do
   accepts the layout name to be given as a string or as an atom. If a
   string, it must contain the format. Passing an atom means the layout
   format will be found at rendering time, similar to the template in
-  `render/3`.
+  `render/3`. It can also be set to `false`. In this case, no layout
+  would be used.
 
   ## Examples
 
@@ -447,8 +495,8 @@ defmodule Phoenix.Controller do
     * `conn` - the `Plug.Conn` struct
 
     * `template` - which may be an atom or a string. If an atom, like `:index`,
-      it will render a template with the same format as the one found in
-      `conn.params["format"]`. For example, for an HTML request, it will render
+      it will render a template with the same format as the one returned by
+      `get_format/1`. For example, for an HTML request, it will render
       the "index.html" template. If the template is a string, it must contain
       the extension too, like "index.json"
 
@@ -538,8 +586,8 @@ defmodule Phoenix.Controller do
   def render(conn, template, assigns)
     when is_atom(template) and is_list(assigns) do
     format =
-      conn.params["format"] ||
-      raise "cannot render template #{inspect template} because conn.params[\"format\"] is not set. " <>
+      get_format(conn) ||
+      raise "cannot render template #{inspect template} because conn.params[\"_format\"] is not set. " <>
             "Please set `plug :accepts, %w(html json ...)` in your pipeline."
     do_render(conn, template_name(template, format), format, assigns)
   end
@@ -580,6 +628,20 @@ defmodule Phoenix.Controller do
     data = Phoenix.View.render_to_iodata(view, template,
                                          Map.put(conn.assigns, :conn, conn))
     send_resp(conn, conn.status || 200, content_type, data)
+  end
+
+  @doc """
+  Puts the format in the connection.
+
+  See `get_format/1` for retrieval.
+  """
+  def put_format(conn, format), do: put_private(conn, :phoenix_format, format)
+
+  @doc """
+  Returns the request format, such as "json", "html".
+  """
+  def get_format(conn) do
+    conn.private[:phoenix_format] || conn.params["_format"]
   end
 
   @doc """
@@ -693,6 +755,28 @@ defmodule Phoenix.Controller do
   end
 
   @doc """
+  Put headers that improve browser security.
+
+  It sets the following headers:
+
+      * x-frame-options - set to SAMEORIGIN to avoid clickjacking
+        through iframes unless in the same origin
+      * x-content-type-options - set to nosniff. This requires
+        script and style tags to be sent with proper content type
+      * x-xss-protection - set to "1; mode=block" to improve XSS
+        protection on both Chrome and IE
+
+  Custom headers may also be given.
+  """
+  def put_secure_browser_headers(conn, _opts \\ []) do
+    merge_resp_headers(conn, [
+      {"x-frame-options", "SAMEORIGIN"},
+      {"x-xss-protection", "1; mode=block"},
+      {"x-content-type-options", "nosniff"}
+    ])
+  end
+
+  @doc """
   Gets the CSRF token.
   """
   defdelegate get_csrf_token(), to: Plug.CSRFProtection
@@ -710,9 +794,9 @@ defmodule Phoenix.Controller do
   negotiation based on the request information. If the client
   accepts any of the given formats, the request proceeds.
 
-  If the request contains a "format" parameter, it is
+  If the request contains a "_format" parameter, it is
   considered to be the format desired by the client. If no
-  "format" parameter is available, this function will parse
+  "_format" parameter is available, this function will parse
   the "accept" header and find a matching format accordingly.
 
   It is important to notice that browsers have historically
@@ -739,10 +823,34 @@ defmodule Phoenix.Controller do
       plug :accepts, ["html", "json"]
       plug :accepts, ~w(html json)
 
+  ## Custom media types
+
+  It is possible to add custom media types to your Phoenix application.
+  The first step is to teach Plug about those new media types in
+  your `config/config.exs` file:
+
+      config :plug, :mimes, %{
+        "application/vnd.api+json" => ["json-api"]
+      }
+
+  The key is the media type, the value is a list of formats the
+  media type can be identified with. For example, by using
+  "json-api", you will be able to use templates with extension
+  "index.json-api" or to force a particular format in a given
+  URL by sending "?_format=json-api".
+
+  After this change, you must recompile plug:
+
+      $ touch deps/plug/mix.exs
+      $ mix deps.compile plug
+
+  And now you can use it in accepts too:
+
+      plug :accepts, ["html", "json-api"]
   """
   @spec accepts(Plug.Conn.t, [binary]) :: Plug.Conn.t | no_return
   def accepts(conn, [_|_] = accepted) do
-    case Map.fetch conn.params, "format" do
+    case Map.fetch(conn.params, "_format") do
       {:ok, format} ->
         handle_params_accept(conn, format, accepted)
       :error ->
@@ -752,7 +860,7 @@ defmodule Phoenix.Controller do
 
   defp handle_params_accept(conn, format, accepted) do
     if format in accepted do
-      conn
+      put_format(conn, format)
     else
       Logger.debug "Unknown format #{inspect format} in plug :accepts, " <>
                    "expected one of #{inspect accepted}"
@@ -763,7 +871,7 @@ defmodule Phoenix.Controller do
   # In case there is no accept header or the header is */*
   # we use the first format specified in the accepts list.
   defp handle_header_accept(conn, header, [first|_]) when header == [] or header == ["*/*"] do
-    accept(conn, first)
+    put_format(conn, first)
   end
 
   # In case there is a header, we need to parse it.
@@ -771,7 +879,7 @@ defmodule Phoenix.Controller do
   # we unfortunately need to assume it is a browser sending us a request.
   defp handle_header_accept(conn, [header|_], accepted) do
     if header =~ "*/*" and "html" in accepted do
-      accept(conn, "html")
+      put_format(conn, "html")
     else
       parse_header_accept(conn, String.split(header, ","), [], accepted)
     end
@@ -784,7 +892,7 @@ defmodule Phoenix.Controller do
         q    = parse_q(args)
 
         if q === 1.0 && (format = find_format(exts, accepted)) do
-          accept(conn, format)
+          put_format(conn, format)
         else
           parse_header_accept(conn, t, [{-q, exts}|acc], accepted)
         end
@@ -802,7 +910,7 @@ defmodule Phoenix.Controller do
 
   defp parse_header_accept(conn, {_, exts}, accepted) do
     if format = find_format(exts, accepted) do
-      accept(conn, format)
+      put_format(conn, format)
     end
   end
 
@@ -823,10 +931,6 @@ defmodule Phoenix.Controller do
 
   defp find_format("*/*", accepted), do: Enum.fetch!(accepted, 0)
   defp find_format(exts, accepted),  do: Enum.find(exts, &(&1 in accepted))
-
-  defp accept(conn, format) do
-    put_in conn.params["format"], format
-  end
 
   defp refuse(conn, accepted) do
     Logger.debug "No supported media type in accept header in plug :accepts, " <>

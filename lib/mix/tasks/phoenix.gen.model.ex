@@ -16,6 +16,8 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
     * a model in web/models
     * a migration file for the repository
 
+  The generated migration can be skipped with `--no-migration`.
+
   ## Attributes
 
   The resource fields are given using `name:type` syntax
@@ -24,9 +26,10 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
 
       mix phoenix.gen.model User users name age:integer
 
-  The generator also supports `belongs_to` associations:
+  The generator also supports `belongs_to` associations
+  via references:
 
-      mix phoenix.gen.model Post posts title user:belongs_to
+      mix phoenix.gen.model Post posts title user_id:references:users
 
   This will result in a migration with an `:integer` column
   of `:user_id` and create an index. It will also generate
@@ -45,10 +48,36 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
 
       mix phoenix.gen.model Admin.User users name:string age:integer
 
+  ## binary_id
+
+  Generated migration can use `binary_id` for model's primary key and it's
+  references with option `--binary-id`.
+
+  This option assumes the project was generated with the `--binary-id` option,
+  that sets up models to use `binary_id` by default. If that's not the case
+  you can still set all your models to use `binary_id` by default, by adding
+  following to your `model` function in `web/web.ex`option or by adding
+  following to the generated model before the `schema` declaration:
+
+      @primary_key {:id, :binary_id, autogenerate: true}
+      @foreign_key_type :binary_id
+
+  ## Default options
+
+  This generator uses default options provided in the `:generators` configuration
+  of the `:phoenix` application. You can override those options providing
+  corresponding switches, e.g. `--no-binary-id` to use normal ids despite
+  the default configuration or `--migration` to force generation of the migration.
+
   """
   def run(args) do
-    {_opts, parsed, _} = OptionParser.parse(args, switches: [])
+    switches = [migration: :boolean, binary_id: :boolean, instructions: :string]
+
+    {opts, parsed, _} = OptionParser.parse(args, switches: switches)
     [singular, plural | attrs] = validate_args!(parsed)
+
+    default_opts = Application.get_env(:phoenix, :generators, [])
+    opts = Keyword.merge(default_opts, opts)
 
     attrs     = Mix.Phoenix.attrs(attrs)
     binding   = Mix.Phoenix.inflect(singular)
@@ -63,20 +92,41 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
     binding = binding ++
               [attrs: attrs, plural: plural, types: types(attrs),
                assocs: assocs(assocs), indexes: indexes(plural, assocs),
-               defaults: defaults(attrs), params: params]
+               defaults: defaults(attrs), params: params,
+               binary_id: opts[:binary_id]]
 
-    Mix.Phoenix.copy_from source_dir, "", binding, [
-      {:eex, "migration.exs",  "priv/repo/migrations/#{timestamp()}_create_#{migration}.exs"},
+    files = [
       {:eex, "model.ex",       "web/models/#{path}.ex"},
       {:eex, "model_test.exs", "test/models/#{path}_test.exs"},
     ]
+
+    if opts[:migration] != false do
+      files =
+        [{:eex, "migration.exs", "priv/repo/migrations/#{timestamp()}_create_#{migration}.exs"}|files]
+    end
+
+    Mix.Phoenix.copy_from paths(), "priv/templates/phoenix.gen.model", "", binding, files
+
+    # Print any extra instruction given by parent generators
+    Mix.shell.info opts[:instructions] || ""
+
+    if opts[:migration] != false do
+      Mix.shell.info """
+      Remember to update your repository by running migrations:
+
+          $ mix ecto.migrate
+      """
+    end
   end
 
   defp validate_args!([_, plural | _] = args) do
-    if String.contains?(plural, ":") do
-      raise_with_help
-    else
-      args
+    cond do
+      String.contains?(plural, ":") ->
+        raise_with_help
+      plural != Phoenix.Naming.underscore(plural) ->
+        Mix.raise "expected the second argument, #{inspect plural}, to be all lowercase using snake_case convention"
+      true ->
+        args
     end
   end
 
@@ -94,21 +144,32 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
   end
 
   defp partition_attrs_and_assocs(attrs) do
-    Enum.partition attrs, fn {_, kind} ->
-      kind == :belongs_to
+    Enum.partition attrs, fn
+      {_, {:references, _}} ->
+        true
+      {key, :references} ->
+        Mix.raise """
+        Phoenix generators expect the table to be given to #{key}:references.
+        For example:
+
+            mix phoenix.gen.model Comment comments body:text post_id:references:posts
+        """
+      _ ->
+        false
     end
   end
 
   defp assocs(assocs) do
-    Enum.reduce assocs, [], fn {key, _}, acc ->
-      assoc = Mix.Phoenix.inflect Atom.to_string(key)
-      [{key, :"#{key}_id", assoc[:module]} | acc]
+    Enum.map assocs, fn {key_id, {:references, source}} ->
+      key   = String.replace(Atom.to_string(key_id), "_id", "")
+      assoc = Mix.Phoenix.inflect key
+      {String.to_atom(key), key_id, assoc[:module], source}
     end
   end
 
   defp indexes(plural, assocs) do
-    Enum.reduce assocs, [], fn {key, _}, acc ->
-      ["create index(:#{plural}, [:#{key}_id])" | acc]
+    Enum.map assocs, fn {key, _} ->
+      "create index(:#{plural}, [:#{key}])"
     end
   end
 
@@ -147,7 +208,7 @@ defmodule Mix.Tasks.Phoenix.Gen.Model do
     end
   end
 
-  defp source_dir do
-    Application.app_dir(:phoenix, "priv/templates/model")
+  defp paths do
+    [".", :phoenix]
   end
 end

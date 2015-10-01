@@ -51,7 +51,7 @@ defmodule Phoenix.ConnTest do
 
   ## Views testing
 
-  Under other circunstances, you may be testing a view or
+  Under other circumstances, you may be testing a view or
   another layer that requires a connection for processing.
   For such cases, a connection can be created using the
   `conn/3` helper:
@@ -160,7 +160,7 @@ defmodule Phoenix.ConnTest do
 
   ## Parameters and body
 
-  This function, as well as `get/3`, `post/3` and friends, accept the
+  This function, as well as `get/3`, `post/3` and friends, accepts the
   request body or parameters as last argument:
 
         get conn(), "/", some: "param"
@@ -192,6 +192,7 @@ defmodule Phoenix.ConnTest do
     |> ensure_recycled()
     |> dispatch_endpoint(endpoint, method, path_or_action, params_or_body)
     |> Conn.put_private(:phoenix_recycled, false)
+    |> from_set_to_sent()
   end
 
   defp dispatch_endpoint(conn, endpoint, method, path, params_or_body) when is_binary(path) do
@@ -206,19 +207,8 @@ defmodule Phoenix.ConnTest do
     |> endpoint.call(endpoint.init(action))
   end
 
-  @doc """
-  Puts a new request header.
-
-  Previous entries of the same header are overridden.
-  """
-  @spec put_req_header(Conn.t, binary, binary) :: Conn.t
-  defdelegate put_req_header(conn, key, value), to: Plug.Test
-
-  @doc """
-  Deletes a request header.
-  """
-  @spec delete_req_header(Conn.t, binary) :: Conn.t
-  defdelegate delete_req_header(conn, key), to: Plug.Test
+  defp from_set_to_sent(%Conn{state: :set} = conn), do: Conn.send_resp(conn)
+  defp from_set_to_sent(conn), do: conn
 
   @doc """
   Puts a request cookie.
@@ -288,9 +278,20 @@ defmodule Phoenix.ConnTest do
   end
 
   defp response_content_type?(header, format) do
+    case parse_content_type(header) do
+      {part, subpart} ->
+        format = Atom.to_string(format)
+        format in Plug.MIME.extensions(part <> "/" <> subpart) or
+          format == subpart or String.ends_with?(subpart, "+" <> format)
+      _  ->
+        false
+    end
+  end
+
+  defp parse_content_type(header) do
     case Plug.Conn.Utils.content_type(header) do
       {:ok, part, subpart, _params} ->
-        Atom.to_string(format) in Plug.MIME.extensions(part <> "/" <> subpart)
+        {part, subpart}
       _ ->
         false
     end

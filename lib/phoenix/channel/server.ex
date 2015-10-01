@@ -1,5 +1,6 @@
 defmodule Phoenix.Channel.Server do
   use GenServer
+  require Logger
 
   alias Phoenix.PubSub
   alias Phoenix.Socket
@@ -7,7 +8,6 @@ defmodule Phoenix.Channel.Server do
   alias Phoenix.Socket.Message
   alias Phoenix.Socket.Reply
 
-  # TODO: Document me as the transport API.
   @moduledoc false
 
   ## Transport API
@@ -24,20 +24,10 @@ defmodule Phoenix.Channel.Server do
         receive do: ({^ref, reply} -> {:ok, reply, pid})
       :ignore ->
         receive do: ({^ref, reply} -> {:error, reply})
-      {:error, _} ->
+      {:error, reason} ->
+        Logger.error fn -> Exception.format_exit(reason) end
         {:error, %{reason: "join crashed"}}
     end
-  end
-
-  @doc """
-  Notifies the channel the client left.
-
-  This event is async and a message is sent back to the
-  transport as soon the leave command is processed (but
-  before termination).
-  """
-  def leave(pid, ref) do
-    GenServer.cast(pid, {:leave, ref})
   end
 
   @doc """
@@ -61,6 +51,13 @@ defmodule Phoenix.Channel.Server do
           {:DOWN, ^ref, _, _, _} -> :ok
         end
     end
+  end
+
+  @doc """
+  Gets the socket from the channel.
+  """
+  def socket(pid) do
+    GenServer.call(pid, :socket)
   end
 
   ## Channel API
@@ -133,31 +130,16 @@ defmodule Phoenix.Channel.Server do
   Pushes a message with the given topic, event and payload
   to the given process.
   """
-  def push(pid, topic, event, payload)
+  def push(pid, topic, event, payload, serializer)
       when is_binary(topic) and is_binary(event) and is_map(payload) do
-    send pid, %Message{
-      topic: topic,
-      event: event,
-      payload: payload
-    }
+
+    encoded_msg = serializer.encode!(%Message{topic: topic,
+                                              event: event,
+                                              payload: payload})
+    send pid, encoded_msg
     :ok
   end
   def push(_, _, _, _), do: raise_invalid_message
-
-  @doc """
-  Pushes a reply message to the given pid.
-  """
-  def reply(pid, ref, topic, payload)
-      when is_binary(topic) and is_map(payload) do
-    send pid, %Message{
-      ref: ref,
-      topic: topic,
-      event: "phx_reply",
-      payload: payload
-    }
-    :ok
-  end
-  def reply(_, _, _, _), do: raise_invalid_message
 
   defp raise_invalid_message do
     raise ArgumentError, "topic and event must be strings, message must be a map"
@@ -183,7 +165,7 @@ defmodule Phoenix.Channel.Server do
 
             {:ok, Socket.t} |
             {:ok, reply :: map, Socket.t} |
-            {:error, reply :: map, Socket.t}
+            {:error, reply :: map}
 
         got #{inspect other}
         """
@@ -191,9 +173,19 @@ defmodule Phoenix.Channel.Server do
   end
 
   defp join(socket, reply, parent, ref) do
-    PubSub.subscribe(socket.pubsub_server, self(), socket.topic, link: true)
+    PubSub.subscribe(socket.pubsub_server, self(), socket.topic,
+      link: true,
+      fastlane: {socket.transport_pid,
+                 socket.serializer,
+                 socket.channel.__intercepts__()})
+
     send(parent, {ref, reply})
     {:ok, %{socket | joined: true}}
+  end
+
+  @doc false
+  def handle_call(:socket, _from, socket) do
+    {:reply, socket, socket}
   end
 
   @doc false
@@ -201,11 +193,17 @@ defmodule Phoenix.Channel.Server do
     handle_result({:stop, {:shutdown, :closed}, socket}, :handle_in)
   end
 
-  def handle_cast({:leave, ref}, socket) do
+  @doc false
+  def handle_info(%Message{topic: topic, event: "phx_join"}, %{topic: topic} = socket) do
+    Logger.info fn -> "#{inspect socket.channel} received join event with topic \"#{topic}\" but channel already joined" end
+
+    handle_result({:reply, {:error, %{reason: "already joined"}}, socket}, :handle_in)
+  end
+
+  def handle_info(%Message{topic: topic, event: "phx_leave", ref: ref}, %{topic: topic} = socket) do
     handle_result({:stop, {:shutdown, :left}, :ok, put_in(socket.ref, ref)}, :handle_in)
   end
 
-  @doc false
   def handle_info(%Message{topic: topic, event: event, payload: payload, ref: ref},
                   %{topic: topic} = socket) do
     event
@@ -281,8 +279,10 @@ defmodule Phoenix.Channel.Server do
 
   defp handle_reply(socket, {status, payload}, :handle_in)
        when is_atom(status) and is_map(payload) do
-    send socket.transport_pid, %Reply{status: status, topic: socket.topic,
-                                      ref: socket.ref, payload: payload}
+
+    send socket.transport_pid, socket.serializer.encode!(
+      %Reply{topic: socket.topic, ref: socket.ref, status: status, payload: payload}
+    )
   end
 
   defp handle_reply(socket, status, :handle_in) when is_atom(status) do

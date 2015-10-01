@@ -17,21 +17,17 @@ defmodule Mix.Tasks.Phoenix.New do
     {:eex,  "new/lib/application_name.ex",                   "lib/application_name.ex"},
     {:eex,  "new/lib/application_name/endpoint.ex",          "lib/application_name/endpoint.ex"},
     {:keep, "new/test/channels",                             "test/channels"},
-    {:eex,  "new/test/controllers/page_controller_test.exs", "test/controllers/page_controller_test.exs"},
+    {:keep, "new/test/controllers",                          "test/controllers"},
     {:eex,  "new/test/views/error_view_test.exs",            "test/views/error_view_test.exs"},
-    {:eex,  "new/test/views/page_view_test.exs",             "test/views/page_view_test.exs"},
     {:eex,  "new/test/support/conn_case.ex",                 "test/support/conn_case.ex"},
     {:eex,  "new/test/support/channel_case.ex",              "test/support/channel_case.ex"},
     {:eex,  "new/test/test_helper.exs",                      "test/test_helper.exs"},
-    {:keep, "new/web/channels",                              "web/channels"},
-    {:eex,  "new/web/controllers/page_controller.ex",        "web/controllers/page_controller.ex"},
+    {:eex,  "new/web/channels/user_socket.ex",               "web/channels/user_socket.ex"},
+    {:keep, "new/web/controllers",                           "web/controllers"},
     {:keep, "new/web/models",                                "web/models"},
-    {:eex,  "new/web/templates/layout/app.html.eex",         "web/templates/layout/app.html.eex"},
-    {:eex,  "new/web/templates/page/index.html.eex",         "web/templates/page/index.html.eex"},
-    {:eex,  "new/web/views/error_view.ex",                   "web/views/error_view.ex"},
-    {:eex,  "new/web/views/layout_view.ex",                  "web/views/layout_view.ex"},
-    {:eex,  "new/web/views/page_view.ex",                    "web/views/page_view.ex"},
     {:eex,  "new/web/router.ex",                             "web/router.ex"},
+    {:keep, "new/web/static/vendor",                         "web/static/vendor"},
+    {:eex,  "new/web/views/error_view.ex",                   "web/views/error_view.ex"},
     {:eex,  "new/web/web.ex",                                "web/web.ex"},
     {:eex,  "new/mix.exs",                                   "mix.exs"},
     {:eex,  "new/README.md",                                 "README.md"},
@@ -41,16 +37,29 @@ defmodule Mix.Tasks.Phoenix.New do
     {:eex,  "ecto/repo.ex",              "lib/application_name/repo.ex"},
     {:keep, "ecto/test/models",          "test/models"},
     {:eex,  "ecto/model_case.ex",        "test/support/model_case.ex"},
-    {:keep, "ecto/priv/repo/migrations", "priv/repo/migrations"}
+    {:keep, "ecto/priv/repo/migrations", "priv/repo/migrations"},
+    {:eex,  "ecto/seeds.exs",            "priv/repo/seeds.exs"}
   ]
 
   @brunch [
     {:text, "static/brunch/.gitignore",       ".gitignore"},
-    {:text, "static/brunch/brunch-config.js", "brunch-config.js"},
+    {:eex,  "static/brunch/brunch-config.js", "brunch-config.js"},
     {:text, "static/brunch/package.json",     "package.json"},
-    {:text, "static/app.css",                 "web/static/css/app.scss"},
-    {:text, "static/brunch/app.js",           "web/static/js/app.js"},
+    {:text, "static/app.css",                 "web/static/css/app.css"},
+    {:eex,  "static/brunch/app.js",           "web/static/js/app.js"},
+    {:eex,  "static/brunch/socket.js",        "web/static/js/socket.js"},
     {:text, "static/robots.txt",              "web/static/assets/robots.txt"},
+  ]
+
+  @html [
+    {:eex,  "new/test/controllers/page_controller_test.exs", "test/controllers/page_controller_test.exs"},
+    {:eex,  "new/test/views/layout_view_test.exs",           "test/views/layout_view_test.exs"},
+    {:eex,  "new/test/views/page_view_test.exs",             "test/views/page_view_test.exs"},
+    {:eex,  "new/web/controllers/page_controller.ex",        "web/controllers/page_controller.ex"},
+    {:eex,  "new/web/templates/layout/app.html.eex",         "web/templates/layout/app.html.eex"},
+    {:eex,  "new/web/templates/page/index.html.eex",         "web/templates/page/index.html.eex"},
+    {:eex,  "new/web/views/layout_view.ex",                  "web/views/layout_view.ex"},
+    {:eex,  "new/web/views/page_view.ex",                    "web/views/page_view.ex"},
   ]
 
   @bare [
@@ -63,7 +72,7 @@ defmodule Mix.Tasks.Phoenix.New do
   # Embed all defined templates
   root = Path.expand("../templates", __DIR__)
 
-  for {format, source, _} <- @new ++ @ecto ++ @brunch ++ @bare do
+  for {format, source, _} <- @new ++ @ecto ++ @brunch ++ @html ++ @bare do
     unless format == :keep do
       @external_resource Path.join(root, source)
       def render(unquote(source)), do: unquote(File.read!(Path.join(root, source)))
@@ -94,13 +103,21 @@ defmodule Mix.Tasks.Phoenix.New do
       the generated skeleton
 
     * `--database` - specify the database adapter for ecto.
-      Values can be `mysql` or `mssql`. Defaults to `postgres`
+      Values can be `postgres` `mysql`, `mssql`, `sqlite` or
+      `mongodb`. Defaults to `postgres`
 
     * `--no-brunch` - do not generate brunch files
-      for static asset building
+      for static asset building. When choosing this
+      option, you will need to manually handle
+      JavaScript dependencies if building HTML apps
 
     * `--no-ecto` - do not generate ecto files for
       the model layer
+
+    * `--no-html` - do not generate HTML views.
+
+    * `--binary-id` - use `binary_id` as primary key type
+      in ecto models
 
   ## Examples
 
@@ -116,7 +133,8 @@ defmodule Mix.Tasks.Phoenix.New do
 
   """
   @switches [dev: :boolean, brunch: :boolean, ecto: :boolean,
-             app: :string, module: :string, database: :string]
+             app: :string, module: :string, database: :string,
+             binary_id: :boolean, html: :boolean]
 
   def run([version]) when version in ~w(-v --version) do
     Mix.shell.info "Phoenix v#{@version}"
@@ -141,27 +159,43 @@ defmodule Mix.Tasks.Phoenix.New do
 
   def run(app, mod, path, opts) do
     db = Keyword.get(opts, :database, "postgres")
-    dev = Keyword.get(opts, :dev, false)
     ecto = Keyword.get(opts, :ecto, true)
+    html = Keyword.get(opts, :html, true)
     brunch = Keyword.get(opts, :brunch, true)
+    phoenix_path = phoenix_path(path, Keyword.get(opts, :dev, false))
 
-    {adapter_app, adapter_module, db_user, db_password} = set_ecto_adapter(db)
-    pubsub_server = set_pubsub_server(mod)
+    # We lowercase the database name because according to the
+    # SQL spec, they are case insensitive unless quoted, which
+    # means creating a database like FoO is the same as foo in
+    # some storages.
+    {adapter_app, adapter_module, adapter_config} = get_ecto_adapter(db, String.downcase(app), mod)
+    pubsub_server = get_pubsub_server(mod)
+    in_umbrella? = in_umbrella?(path)
+
+    {brunch_deps_prefix, static_deps_prefix} =
+      if in_umbrella?, do: {"../../", "../../../"}, else: {"", ""}
+
+    binary_id = Keyword.get(opts, :binary_id, false)
+    adapter_config = Keyword.put_new(adapter_config, :binary_id, binary_id)
 
     binding = [application_name: app,
                application_module: mod,
-               phoenix_dep: phoenix_dep(dev),
+               phoenix_dep: phoenix_dep(phoenix_path),
+               phoenix_path: phoenix_path,
+               phoenix_static_path: phoenix_static_path(phoenix_path),
                pubsub_server: pubsub_server,
                secret_key_base: random_string(64),
                prod_secret_key_base: random_string(64),
                signing_salt: random_string(8),
-               in_umbrella: in_umbrella?(path),
+               in_umbrella: in_umbrella?,
+               brunch_deps_prefix: brunch_deps_prefix,
+               static_deps_prefix: static_deps_prefix,
                brunch: brunch,
                ecto: ecto,
+               html: html,
                adapter_app: adapter_app,
                adapter_module: adapter_module,
-               db_user: db_user,
-               db_password: db_password,
+               adapter_config: adapter_config,
                hex?: Code.ensure_loaded?(Hex),
                namespaced?: Mix.Utils.camelize(app) != mod]
 
@@ -170,6 +204,7 @@ defmodule Mix.Tasks.Phoenix.New do
     # Optional contents
     copy_model  app, path, binding
     copy_static app, path, binding
+    copy_html   app, path, binding
 
     # Parallel installs
     install? = Mix.shell.yes?("\nFetch and install dependencies?")
@@ -191,6 +226,10 @@ defmodule Mix.Tasks.Phoenix.New do
       brunch && Task.await(brunch, :infinity)
       mix    && Task.await(mix, :infinity)
 
+      if binding[:ecto] do
+        extra = extra ++ ["$ mix ecto.create"]
+      end
+
       print_mix_info(path, extra)
     end)
   end
@@ -199,37 +238,37 @@ defmodule Mix.Tasks.Phoenix.New do
     if binding[:ecto] do
       copy_from path, binding, @ecto
 
+      adapter_config = binding[:adapter_config]
+
       append_to path, "config/dev.exs", """
 
       # Configure your database
       config :#{binding[:application_name]}, #{binding[:application_module]}.Repo,
-        adapter: #{inspect binding[:adapter_module]},
-        username: #{inspect binding[:db_user]},
-        password: #{inspect binding[:db_password]},
-        database: "#{binding[:application_name]}_dev",
-        size: 10 # The amount of database connections in the pool
+        adapter: #{inspect binding[:adapter_module]}#{kw_to_config adapter_config[:dev]},
+        pool_size: 10
       """
 
       append_to path, "config/test.exs", """
 
       # Configure your database
       config :#{binding[:application_name]}, #{binding[:application_module]}.Repo,
-        adapter: #{inspect binding[:adapter_module]},
-        username: #{inspect binding[:db_user]},
-        password: #{inspect binding[:db_password]},
-        database: "#{binding[:application_name]}_test",
-        size: 1 # Use a single connection for transactional tests
+        adapter: #{inspect binding[:adapter_module]}#{kw_to_config adapter_config[:test]}
       """
 
       append_to path, "config/prod.secret.exs", """
 
       # Configure your database
       config :#{binding[:application_name]}, #{binding[:application_module]}.Repo,
-        adapter: #{inspect binding[:adapter_module]},
-        username: #{inspect binding[:db_user]},
-        password: #{inspect binding[:db_password]},
-        database: "#{binding[:application_name]}_prod",
-        size: 20 # The amount of database connections in the pool
+        adapter: #{inspect binding[:adapter_module]}#{kw_to_config adapter_config[:prod]},
+        pool_size: 20
+      """
+
+      append_to path, "config/config.exs", """
+
+      # Configure phoenix generators
+      config :phoenix, :generators,
+        migration: #{adapter_config[:migration]},
+        binary_id: #{adapter_config[:binary_id]}
       """
     end
   end
@@ -239,12 +278,17 @@ defmodule Mix.Tasks.Phoenix.New do
       copy_from path, binding, @bare
       create_file Path.join(path, "priv/static/js/phoenix.js"), phoenix_js_text()
       create_file Path.join(path, "priv/static/images/phoenix.png"), phoenix_png_text()
-      create_file Path.join(path, "priv/static/images/favicon.ico"), phoenix_favicon_text()
+      create_file Path.join(path, "priv/static/favicon.ico"), phoenix_favicon_text()
     else
       copy_from path, binding, @brunch
-      create_file Path.join(path, "web/static/vendor/phoenix.js"), phoenix_js_text()
       create_file Path.join(path, "web/static/assets/images/phoenix.png"), phoenix_png_text()
-      create_file Path.join(path, "web/static/assets/images/favicon.ico"), phoenix_favicon_text()
+      create_file Path.join(path, "web/static/assets/favicon.ico"), phoenix_favicon_text()
+    end
+  end
+
+  defp copy_html(_app, path, binding) do
+    if binding[:html] do
+      copy_from path, binding, @html
     end
   end
 
@@ -284,7 +328,7 @@ defmodule Mix.Tasks.Phoenix.New do
 
         #{Enum.join(steps, "\n    ")}
 
-    You can also run it inside IEx (Interactive Elixir) as:
+    You can also run your app inside IEx (Interactive Elixir) as:
 
         $ iex -S mix phoenix.server
     """
@@ -342,12 +386,55 @@ defmodule Mix.Tasks.Phoenix.New do
     end
   end
 
-  defp set_ecto_adapter("mssql"), do: {:tds_ecto, Tds.Ecto, "db_user", "db_password"}
-  defp set_ecto_adapter("mysql"), do: {:mariaex, Ecto.Adapters.MySQL, "root", ""}
-  defp set_ecto_adapter("postgres"), do: {:postgrex, Ecto.Adapters.Postgres, "postgres", "postgres"}
-  defp set_ecto_adapter(db), do: Mix.raise "Unknown database #{inspect db}"
+  defp get_ecto_adapter("mssql", app, module) do
+    {:tds_ecto, Tds.Ecto, db_config(app, module, "db_user", "db_password")}
+  end
+  defp get_ecto_adapter("mysql", app, module) do
+    {:mariaex, Ecto.Adapters.MySQL, db_config(app, module, "root", "")}
+  end
+  defp get_ecto_adapter("postgres", app, module) do
+    {:postgrex, Ecto.Adapters.Postgres, db_config(app, module, "postgres", "postgres")}
+  end
+  defp get_ecto_adapter("sqlite", app, module) do
+    {:sqlite_ecto, Sqlite.Ecto,
+      dev:  [database: "db/#{app}_dev.sqlite"],
+      test: [database: "db/#{app}_test.sqlite", pool: Ecto.Adapters.SQL.Sandbox],
+      prod: [database: "db/#{app}_prod.sqlite"],
+      test_begin: "Ecto.Adapters.SQL.begin_test_transaction(#{module}.Repo)",
+      test_restart: "Ecto.Adapters.SQL.restart_test_transaction(#{module}.Repo, [])",
+      migration: true}
+  end
+  defp get_ecto_adapter("mongodb", app, module) do
+    {:mongodb_ecto, Mongo.Ecto,
+     dev:  [database: "#{app}_dev"],
+     test: [database: "#{app}_test", pool_size: 1],
+     prod: [database: "#{app}_prod"],
+     test_begin: "",
+     test_restart: "Mongo.Ecto.truncate(#{module}.Repo, [])",
+     binary_id: true,
+     migration: false}
+  end
+  defp get_ecto_adapter(db, _app, _mod) do
+    Mix.raise "Unknown database #{inspect db}"
+  end
 
-  defp set_pubsub_server(module) do
+  defp db_config(app, module, user, pass) do
+    [dev:  [username: user, password: pass, database: "#{app}_dev", hostname: "localhost"],
+     test: [username: user, password: pass, database: "#{app}_test", hostname: "localhost",
+            pool: Ecto.Adapters.SQL.Sandbox],
+     prod: [username: user, password: pass, database: "#{app}_prod"],
+     test_begin: "Ecto.Adapters.SQL.begin_test_transaction(#{module}.Repo)",
+     test_restart: "Ecto.Adapters.SQL.restart_test_transaction(#{module}.Repo, [])",
+     migration: true]
+  end
+
+  defp kw_to_config(kw) do
+    Enum.map(kw, fn {k, v} ->
+      ",\n  #{k}: #{inspect v}"
+    end)
+  end
+
+  defp get_pubsub_server(module) do
     module
     |> String.split(".")
     |> hd
@@ -368,11 +455,32 @@ defmodule Mix.Tasks.Phoenix.New do
     end
   end
 
-  defp phoenix_dep(true), do: ~s[{:phoenix, path: #{inspect @phoenix}, override: true}]
-  defp phoenix_dep(_),    do: ~s[{:phoenix, github: "phoenixframework/phoenix", override: true}]
-
   defp random_string(length) do
     :crypto.strong_rand_bytes(length) |> Base.encode64 |> binary_part(0, length)
+  end
+
+  defp phoenix_dep("deps/phoenix"), do: ~s[{:phoenix, "~> 1.0.3"}]
+  defp phoenix_dep(path), do: ~s[{:phoenix, path: #{inspect path}, override: true}]
+
+  defp phoenix_static_path("deps/phoenix"), do: "deps/phoenix"
+  defp phoenix_static_path(path), do: Path.join("..", path)
+
+  defp phoenix_path(path, true) do
+    absolute = Path.expand(path)
+    relative = Path.relative_to(absolute, @phoenix)
+
+    if absolute == relative do
+      Mix.raise "--dev project must be inside Phoenix directory"
+    end
+
+    relative
+    |> Path.split
+    |> Enum.map(fn _ -> ".." end)
+    |> Path.join
+  end
+
+  defp phoenix_path(_path, false) do
+    "deps/phoenix"
   end
 
   ## Template helpers

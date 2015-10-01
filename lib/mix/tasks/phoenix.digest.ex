@@ -3,6 +3,7 @@ defmodule Mix.Tasks.Phoenix.Digest do
   @default_input_path "priv/static"
 
   @shortdoc "Digests and compress static files"
+  @recursive true
 
   @moduledoc """
   Digests and compress static files.
@@ -38,16 +39,18 @@ defmodule Mix.Tasks.Phoenix.Digest do
     input_path  = List.first(args) || @default_input_path
     output_path = opts[:output] || input_path
 
+    {:ok, _} = Application.ensure_all_started(:phoenix)
+
     case Phoenix.Digester.compile(input_path, output_path) do
       :ok ->
         # We need to call build structure so everything we have
         # generated into priv is copied to _build in case we have
-        # build_embedded set to true. In case if it's not true,
+        # build_embedded set to true. In case it's not true,
         # build structure is mostly a no-op, so we are fine.
         Mix.Project.build_structure()
-        Mix.shell.info [:green, "Check your digested files at '#{output_path}'."]
+        Mix.shell.info [:green, "Check your digested files at #{inspect output_path}"]
       {:error, :invalid_path} ->
-        Mix.raise "The input path '#{input_path}' does not exist."
+        Mix.shell.error "The input path #{inspect input_path} does not exist"
     end
   end
 end

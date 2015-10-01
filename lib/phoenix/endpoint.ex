@@ -30,7 +30,7 @@ defmodule Phoenix.Endpoint do
         # plug ...
         # plug ...
 
-        plug :router, YourApp.Router
+        plug YourApp.Router
       end
 
   Before being used, an endpoint must be explicitly started as part
@@ -73,7 +73,7 @@ defmodule Phoenix.Endpoint do
       with a 500 error during a HTML request, `render("500.html", assigns)`
       will be called in the view given to `:render_errors`. Defaults to:
 
-          [view: MyApp.ErrorView, default_format: "html"]
+          [view: MyApp.ErrorView, accepts: ~w(html)]
 
       The default format is used when none is set in the connection.
 
@@ -91,6 +91,9 @@ defmodule Phoenix.Endpoint do
       "priv/static/manifest.json" which is the file automatically generated
       by `mix phoenix.digest`.
 
+    * `:check_origin` - configure transports to check origins or not. May
+      be false, true or a list of hosts that are allowed.
+
     * `:http` - the configuration for the HTTP server. Currently uses
       cowboy and accepts all options as defined by
       [`Plug.Adapters.Cowboy`](http://hexdocs.pm/plug/Plug.Adapters.Cowboy.html).
@@ -100,6 +103,11 @@ defmodule Phoenix.Endpoint do
       cowboy and accepts all options as defined by
       [`Plug.Adapters.Cowboy`](http://hexdocs.pm/plug/Plug.Adapters.Cowboy.html).
       Defaults to `false`.
+
+    * `:force_ssl` - ensures no data is ever sent via http, always redirecting
+      to https. It expects a list of options which are forwarded to `Plug.SSL`.
+      By default, it redirects http requests and sets the
+      "strict-transport-security" header for https ones.
 
     * `:secret_key_base` - a secret key used as a base to generate secrets
       to encode cookies, session and friends. Defaults to `nil` as it must
@@ -132,7 +140,7 @@ defmodule Phoenix.Endpoint do
       the "watch" mode of the brunch build tool when the server starts.
       You can configure it to whatever build tool or command you want:
 
-          [{"node", ["node_modules/brunch/bin/brunch", "watch"]}]
+          [node: ["node_modules/brunch/bin/brunch", "watch"]]
 
     * `:live_reload` - configuration for the live reload option.
       Configuration requires a `:paths` option which should be a list of
@@ -155,18 +163,6 @@ defmodule Phoenix.Endpoint do
 
           [name: :my_pubsub, adapter: Phoenix.PubSub.Redis,
            host: "192.168.100.1"]
-
-    * `:transports` - configuration for the channel transport. Check the
-      transport modules for transport specific options. A list of allowed
-      origins can be specified in the `:origins` key to restrict clients
-      based on the given Origin header.
-
-          [origins: ["//example.com", "http://example.com",
-                     "https://example.com:8080"]]
-
-      If no such header is sent no verification will be performed. If the
-      Origin header does not match the list of allowed origins a 403 Forbidden
-      response will be sent to the client.
 
   ## Endpoint API
 
@@ -279,6 +275,7 @@ defmodule Phoenix.Endpoint do
       import Phoenix.Endpoint
 
       Module.register_attribute(__MODULE__, :plugs, accumulate: true)
+      Module.register_attribute(__MODULE__, :phoenix_sockets, accumulate: true)
       @before_compile Phoenix.Endpoint
 
       def init(opts) do
@@ -290,10 +287,15 @@ defmodule Phoenix.Endpoint do
         conn
         |> Plug.Conn.put_private(:phoenix_endpoint, __MODULE__)
         |> put_script_name()
-        |> phoenix_endpoint_pipeline()
+        |> phoenix_pipeline()
       end
 
       defoverridable [init: 1, call: 2]
+
+      if force_ssl = var!(config)[:force_ssl] do
+        plug Plug.SSL,
+          Keyword.put_new(force_ssl, :host, var!(config)[:url][:host] || "localhost")
+      end
 
       if var!(config)[:debug_errors] do
         use Plug.Debugger, otp_app: var!(otp_app)
@@ -333,6 +335,8 @@ defmodule Phoenix.Endpoint do
 
       @doc """
       Generates the endpoint base URL without any path information.
+
+      It uses the configuration under `:url` to generate such.
       """
       def url do
         Phoenix.Config.cache(__MODULE__,
@@ -342,11 +346,27 @@ defmodule Phoenix.Endpoint do
 
       @doc """
       Generates the static URL without any path information.
+
+      It uses the configuration under `:static_url` to generate
+      such. It fallsback to `:url` if `:static_url` is not set.
       """
       def static_url do
         Phoenix.Config.cache(__MODULE__,
           :__phoenix_static_url__,
           &Phoenix.Endpoint.Adapter.static_url/1)
+      end
+
+      @doc """
+      Generates the endpoint base URL but as a `URI` struct.
+
+      It uses the configuration under `:url` to generate such.
+      Useful for manipulating the url data and passing to
+      URL helpers.
+      """
+      def struct_url do
+        Phoenix.Config.cache(__MODULE__,
+          :__phoenix_struct_url__,
+          &Phoenix.Endpoint.Adapter.struct_url/1)
       end
 
       @doc """
@@ -388,11 +408,17 @@ defmodule Phoenix.Endpoint do
 
   @doc false
   defmacro __before_compile__(env) do
+    sockets = Module.get_attribute(env.module, :phoenix_sockets)
     plugs = Module.get_attribute(env.module, :plugs)
     {conn, body} = Plug.Builder.compile(env, plugs, [])
 
     quote do
-      defp phoenix_endpoint_pipeline(unquote(conn)), do: unquote(body)
+      defp phoenix_pipeline(unquote(conn)), do: unquote(body)
+
+      @doc """
+      Returns all sockets configured in this endpoint.
+      """
+      def __sockets__, do: unquote(sockets)
     end
   end
 
@@ -401,17 +427,43 @@ defmodule Phoenix.Endpoint do
   @doc """
   Stores a plug to be executed as part of the pipeline.
   """
-  defmacro plug(plug, opts \\ [])
-
-  defmacro plug(:router, router) do
-    quote do
-      @plugs {unquote(router), [], true}
-    end
-  end
-
-  defmacro plug(plug, opts) do
+  defmacro plug(plug, opts \\ []) do
     quote do
       @plugs {unquote(plug), unquote(opts), true}
     end
   end
+
+  @doc """
+  Defines a mount-point for a Socket module to handle channel definitions.
+
+  ## Examples
+
+      socket "/ws", MyApp.UserSocket
+      socket "/ws/admin", MyApp.AdminUserSocket
+
+  By default, the given path is a websocket upgrade endpoint,
+  with long-polling fallback. The transports can be configured
+  within the Socket handler. See `Phoenix.Socket` for more information
+  on defining socket handlers.
+  """
+  defmacro socket(path, module) do
+    # Tear the alias to simply store the root in the AST.
+    # This will make Elixir unable to track the dependency
+    # between endpoint <-> socket and avoid recompiling the
+    # endpoint (alongside the whole project ) whenever the
+    # socket changes.
+    module = tear_alias(module)
+
+    quote do
+      @phoenix_sockets {unquote(path), unquote(module)}
+    end
+  end
+
+  defp tear_alias({:__aliases__, meta, [h|t]}) do
+    alias = {:__aliases__, meta, [h]}
+    quote do
+      Module.concat([unquote(alias)|unquote(t)])
+    end
+  end
+  defp tear_alias(other), do: other
 end

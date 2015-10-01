@@ -1,7 +1,7 @@
 defmodule Mix.Tasks.Phoenix.Gen.Json do
   use Mix.Task
 
-  @shortdoc "Generates a controller and model for an JSON-based resource"
+  @shortdoc "Generates a controller and model for a JSON based resource"
 
   @moduledoc """
   Generates a Phoenix resource.
@@ -19,9 +19,9 @@ defmodule Mix.Tasks.Phoenix.Gen.Json do
     * a migration file for the repository
     * test files for generated model and controller
 
-  The generated model can be skipped with `--no-model`.
-  Read the documentation for `phoenix.gen.model` for more
-  information on attributes and namespaced resources.
+  If you already have a model, the generated model can be skipped
+  with `--no-model`. Read the documentation for `phoenix.gen.model`
+  for more information on attributes and namespaced resources.
   """
   def run(args) do
     {opts, parsed, _} = OptionParser.parse(args, switches: [model: :boolean])
@@ -31,14 +31,11 @@ defmodule Mix.Tasks.Phoenix.Gen.Json do
     binding = Mix.Phoenix.inflect(singular)
     path    = binding[:path]
     route   = String.split(path, "/") |> Enum.drop(-1) |> Kernel.++([plural]) |> Enum.join("/")
-    binding = binding ++ [plural: plural, route: route, params: Mix.Phoenix.params(attrs)]
+    binding = binding ++ [plural: plural, route: route,
+                          attrs: attrs, params: Mix.Phoenix.params(attrs)]
 
     Mix.Phoenix.check_module_name_availability!(binding[:module] <> "Controller")
     Mix.Phoenix.check_module_name_availability!(binding[:module] <> "View")
-
-    if opts[:model] != false do
-      Mix.Task.run "phoenix.gen.model", args
-    end
 
     files = [
       {:eex, "controller.ex",       "web/controllers/#{path}_controller.ex"},
@@ -50,29 +47,30 @@ defmodule Mix.Tasks.Phoenix.Gen.Json do
       files = files ++ [{:eex, "changeset_view.ex", "web/views/changeset_view.ex"}]
     end
 
-    Mix.Phoenix.copy_from source_dir, "", binding, files
+    Mix.Phoenix.copy_from paths(), "priv/templates/phoenix.gen.json", "", binding, files
 
-    Mix.shell.info """
+    instructions = """
 
     Add the resource to your api scope in web/router.ex:
 
-        resources "/#{route}", #{binding[:scoped]}Controller
+        resources "/#{route}", #{binding[:scoped]}Controller, except: [:new, :edit]
     """
 
     if opts[:model] != false do
-      Mix.shell.info """
-      and then update your repository by running migrations:
-
-          $ mix ecto.migrate
-      """
+      Mix.Task.run "phoenix.gen.model", ["--instructions", instructions|args]
+    else
+      Mix.shell.info instructions
     end
   end
 
   defp validate_args!([_, plural | _] = args) do
-    if String.contains?(plural, ":") do
-      raise_with_help
-    else
-      args
+    cond do
+      String.contains?(plural, ":") ->
+        raise_with_help
+      plural != Phoenix.Naming.underscore(plural) ->
+        Mix.raise "expected the second argument, #{inspect plural}, to be all lowercase using snake_case convention"
+      true ->
+        args
     end
   end
 
@@ -89,7 +87,7 @@ defmodule Mix.Tasks.Phoenix.Gen.Json do
     """
   end
 
-  defp source_dir do
-    Application.app_dir(:phoenix, "priv/templates/json")
+  defp paths do
+    [".", :phoenix]
   end
 end

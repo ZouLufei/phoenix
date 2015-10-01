@@ -2,6 +2,7 @@
 
 Please take a moment to review this document in order to make the contribution
 process easy and effective for everyone involved!
+Also make sure you read our [Code of Conduct](CODE_OF_CONDUCT.md) that outlines our commitment towards an open and welcoming environment.
 
 ## Using the issue tracker
 
@@ -137,11 +138,12 @@ in order to craft an excellent pull request:
    git remote add upstream https://github.com/phoenixframework/phoenix
    ```
 
-2. If you cloned a while ago, get the latest changes from upstream:
+2. If you cloned a while ago, get the latest changes from upstream, and update your fork:
 
    ```bash
    git checkout master
    git pull upstream master
+   git push
    ```
 
 3. Create a new topic branch (off of `master`) to contain your feature, change,

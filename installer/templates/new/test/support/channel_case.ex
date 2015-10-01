@@ -20,7 +20,6 @@ defmodule <%= application_module %>.ChannelCase do
       # Import conveniences for testing with channels
       use Phoenix.ChannelTest
 <%= if ecto do %>
-      # Alias the data repository and import query/model functions
       alias <%= application_module %>.Repo
       import Ecto.Model
       import Ecto.Query, only: [from: 2]
@@ -33,7 +32,7 @@ defmodule <%= application_module %>.ChannelCase do
 
   setup tags do
 <%= if ecto do %>    unless tags[:async] do
-      Ecto.Adapters.SQL.restart_test_transaction(<%= application_module %>.Repo, [])
+      <%= adapter_config[:test_restart] %>
     end
 <% end %>
     :ok

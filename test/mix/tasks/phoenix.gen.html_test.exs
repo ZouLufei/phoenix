@@ -20,7 +20,7 @@ defmodule Mix.Tasks.Phoenix.Gen.HtmlTest do
       Mix.Tasks.Phoenix.Gen.Html.run ["user", "users", "name", "age:integer", "height:decimal",
                                       "nicks:array:text", "famous:boolean", "born_at:datetime",
                                       "secret:uuid", "first_login:date", "alarm:time",
-                                      "address:belongs_to"]
+                                      "address_id:references:addresses"]
 
       assert_file "web/models/user.ex"
       assert_file "test/models/user_test.exs"
@@ -45,17 +45,18 @@ defmodule Mix.Tasks.Phoenix.Gen.HtmlTest do
         assert file =~ ~s(<%= text_input f, :name, class: "form-control" %>)
         assert file =~ ~s(<%= number_input f, :age, class: "form-control" %>)
         assert file =~ ~s(<%= number_input f, :height, step: "any", class: "form-control" %>)
-        assert file =~ ~s(<%= number_input f, :address_id, class: "form-control" %>)
         assert file =~ ~s(<%= checkbox f, :famous, class: "form-control" %>)
         assert file =~ ~s(<%= datetime_select f, :born_at, class: "form-control" %>)
         assert file =~ ~s(<%= text_input f, :secret, class: "form-control" %>)
-        assert file =~ ~s(<%= label f, :name, "Name" %>)
-        assert file =~ ~s(<%= label f, :age, "Age" %>)
-        assert file =~ ~s(<%= label f, :height, "Height" %>)
-        assert file =~ ~s(<%= label f, :address_id, "Address" %>)
-        assert file =~ ~s(<%= label f, :famous, "Famous" %>)
-        assert file =~ ~s(<%= label f, :born_at, "Born at" %>)
-        assert file =~ ~s(<%= label f, :secret, "Secret" %>)
+        assert file =~ ~s(<%= label f, :name, "Name", class: "control-label" %>)
+        assert file =~ ~s(<%= label f, :age, "Age", class: "control-label" %>)
+        assert file =~ ~s(<%= label f, :height, "Height", class: "control-label" %>)
+        assert file =~ ~s(<%= label f, :famous, "Famous", class: "control-label" %>)
+        assert file =~ ~s(<%= label f, :born_at, "Born at", class: "control-label" %>)
+        assert file =~ ~s(<%= label f, :secret, "Secret", class: "control-label" %>)
+
+        refute file =~ ~s(<%= label f, :address_id)
+        refute file =~ ~s(<%= number_input f, :address_id)
         refute file =~ ":nicks"
       end
 
@@ -78,8 +79,9 @@ defmodule Mix.Tasks.Phoenix.Gen.HtmlTest do
         assert file =~ "defmodule Phoenix.UserControllerTest"
         assert file =~ "use Phoenix.ConnCase"
 
-        assert file =~ ~S|@valid_attrs %{address: nil|
+        assert file =~ ~S|@valid_attrs %{age: 42|
         assert file =~ ~S|@invalid_attrs %{}|
+        refute file =~ ~S|address_id: nil|
 
         assert file =~ ~S|test "lists all entries on index"|
         assert file =~ ~S|conn = get conn, user_path(conn, :index)|
@@ -98,7 +100,7 @@ defmodule Mix.Tasks.Phoenix.Gen.HtmlTest do
         assert file =~ ~S|conn = post conn, user_path(conn, :create), user: @invalid_attrs|
 
         assert file =~ ~S|test "shows chosen resource"|
-        assert file =~ ~S|user = Repo.insert %User{}|
+        assert file =~ ~S|user = Repo.insert! %User{}|
         assert file =~ ~S|assert html_response(conn, 200) =~ "Show user"|
 
         assert file =~ ~S|test "renders form for editing chosen resource"|
@@ -122,46 +124,57 @@ defmodule Mix.Tasks.Phoenix.Gen.HtmlTest do
 
   test "generates nested resource" do
     in_tmp "generates nested resource", fn ->
-      Mix.Tasks.Phoenix.Gen.Html.run ["Admin.User", "users", "name:string"]
+      Mix.Tasks.Phoenix.Gen.Html.run ["Admin.SuperUser", "super_users", "name:string"]
 
-      assert_file "web/models/admin/user.ex"
-      assert [_] = Path.wildcard("priv/repo/migrations/*_create_admin_user.exs")
+      assert_file "web/models/admin/super_user.ex"
+      assert [_] = Path.wildcard("priv/repo/migrations/*_create_admin_super_user.exs")
 
-      assert_file "web/controllers/admin/user_controller.ex", fn file ->
-        assert file =~ "defmodule Phoenix.Admin.UserController"
+      assert_file "web/controllers/admin/super_user_controller.ex", fn file ->
+        assert file =~ "defmodule Phoenix.Admin.SuperUserController"
         assert file =~ "use Phoenix.Web, :controller"
         assert file =~ "Repo.get!"
       end
 
-      assert_file "web/views/admin/user_view.ex", fn file ->
-        assert file =~ "defmodule Phoenix.Admin.UserView do"
+      assert_file "web/views/admin/super_user_view.ex", fn file ->
+        assert file =~ "defmodule Phoenix.Admin.SuperUserView do"
         assert file =~ "use Phoenix.Web, :view"
       end
 
-      assert_file "web/templates/admin/user/edit.html.eex", fn file ->
-        assert file =~ "action: user_path(@conn, :update, @user)"
+      assert_file "web/templates/admin/super_user/edit.html.eex", fn file ->
+        assert file =~ "<h2>Edit super user</h2>"
+        assert file =~ "action: super_user_path(@conn, :update, @super_user)"
       end
 
-      assert_file "web/templates/admin/user/form.html.eex", fn file ->
+      assert_file "web/templates/admin/super_user/form.html.eex", fn file ->
         assert file =~ ~s(<%= text_input f, :name, class: "form-control" %>)
       end
 
-      assert_file "web/templates/admin/user/index.html.eex", fn file ->
+      assert_file "web/templates/admin/super_user/index.html.eex", fn file ->
+        assert file =~ "<h2>Listing super users</h2>"
         assert file =~ "<th>Name</th>"
-        assert file =~ "<%= for user <- @users do %>"
+        assert file =~ "<%= for super_user <- @super_users do %>"
       end
 
-      assert_file "web/templates/admin/user/new.html.eex", fn file ->
-        assert file =~ "action: user_path(@conn, :create)"
+      assert_file "web/templates/admin/super_user/new.html.eex", fn file ->
+        assert file =~ "<h2>New super user</h2>"
+        assert file =~ "action: super_user_path(@conn, :create)"
       end
 
-      assert_file "web/templates/admin/user/show.html.eex", fn file ->
+      assert_file "web/templates/admin/super_user/show.html.eex", fn file ->
+        assert file =~ "<h2>Show super user</h2>"
         assert file =~ "<strong>Name:</strong>"
-        assert file =~ "<%= @user.name %>"
+        assert file =~ "<%= @super_user.name %>"
+      end
+
+      assert_file "test/controllers/admin/super_user_controller_test.exs", fn file ->
+        assert file =~ ~S|assert html_response(conn, 200) =~ "Listing super users"|
+        assert file =~ ~S|assert html_response(conn, 200) =~ "New super user"|
+        assert file =~ ~S|assert html_response(conn, 200) =~ "Show super user"|
+        assert file =~ ~S|assert html_response(conn, 200) =~ "Edit super user"|
       end
 
       assert_received {:mix_shell, :info, ["\nAdd the resource" <> _ = message]}
-      assert message =~ ~s(resources "/admin/users", Admin.UserController)
+      assert message =~ ~s(resources "/admin/super_users", Admin.SuperUserController)
     end
   end
 
@@ -184,7 +197,17 @@ defmodule Mix.Tasks.Phoenix.Gen.HtmlTest do
     end
   end
 
-  test "name can't already be defined" do
+  test "plural can't have uppercased characters or camelized format" do
+    assert_raise Mix.Error, fn ->
+      Mix.Tasks.Phoenix.Gen.Html.run ["Admin.User", "Users", "foo:string"]
+    end
+
+    assert_raise Mix.Error, fn ->
+      Mix.Tasks.Phoenix.Gen.Html.run ["Admin.User", "AdminUsers", "foo:string"]
+    end
+  end
+
+  test "name is already defined" do
     assert_raise Mix.Error, fn ->
       Mix.Tasks.Phoenix.Gen.Html.run ["DupHTML", "duphtmls"]
     end

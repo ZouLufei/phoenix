@@ -53,7 +53,7 @@ defmodule Phoenix.PubSub do
 
   ## Implementing your own adapter
 
-  PubSub adapters run isnide their own supervision tree.
+  PubSub adapters run inside their own supervision tree.
   If you are interested in providing your own adapter,  let's
   call it `Phoenix.PubSub.MyQueue`, the first step is to provide
   a supervisor module that receives the server name and a bunch
@@ -108,28 +108,38 @@ defmodule Phoenix.PubSub do
     * `server` - The Pid registered name of the server
     * `pid` - The subscriber pid to receive pubsub messages
     * `topic` - The topic to subscribe to, ie: `"users:123"`
-    * `opts` - The optional list of options. Supported options
-      only include `:link` to link the subscriber to the pubsub
-      adapter
+    * `opts` - The optional list of options. See below.
 
+  ## Options
+
+    * `:link` - links the subscriber to the pubsub adapter
+    * `:fastlane` - Provides a fastlane path for the broadcasts for
+      `%Phoenix.Socket.Broadcast{}` events. The fastlane process is
+      notified of a cached message instead of the normal subscriber.
+      Fastlane handlers must implement `fastlane/1` callbacks which accepts
+      a `Phoenix.Socket.Broadcast` structs and returns a fastlaned format
+      for the handler. For example:
+
+          PubSub.subscribe(MyApp.PubSub, self(), "topic1",
+            fastlane: {fast_pid, Phoenix.Transports.WebSocketSerializer, ["event1"]})
   """
   @spec subscribe(atom, pid, binary, Keyword.t) :: :ok | {:error, term}
-  def subscribe(server, pid, topic, opts \\ []),
-    do: call(server, {:subscribe, pid, topic, opts})
+  def subscribe(server, pid, topic, opts \\ []) when is_atom(server),
+    do: call(server, :subscribe, [pid, topic, opts])
 
   @doc """
   Unsubscribes the pid from the PubSub adapter's topic.
   """
   @spec unsubscribe(atom, pid, binary) :: :ok | {:error, term}
-  def unsubscribe(server, pid, topic),
-    do: call(server, {:unsubscribe, pid, topic})
+  def unsubscribe(server, pid, topic) when is_atom(server),
+    do: call(server, :unsubscribe, [pid, topic])
 
   @doc """
   Broadcasts message on given topic.
   """
   @spec broadcast(atom, binary, term) :: :ok | {:error, term}
-  def broadcast(server, topic, message),
-    do: call(server, {:broadcast, :none, topic, message})
+  def broadcast(server, topic, message) when is_atom(server),
+    do: call(server, :broadcast, [:none, topic, message])
 
   @doc """
   Broadcasts message on given topic.
@@ -148,8 +158,8 @@ defmodule Phoenix.PubSub do
   Broadcasts message to all but `from_pid` on given topic.
   """
   @spec broadcast_from(atom, pid, binary, term) :: :ok | {:error, term}
-  def broadcast_from(server, from_pid, topic, message) when is_pid(from_pid),
-    do: call(server, {:broadcast, from_pid, topic, message})
+  def broadcast_from(server, from_pid, topic, message) when is_atom(server) and is_pid(from_pid),
+    do: call(server, :broadcast, [from_pid, topic, message])
 
   @doc """
   Broadcasts message to all but `from_pid` on given topic.
@@ -157,20 +167,15 @@ defmodule Phoenix.PubSub do
   Raises `Phoenix.PubSub.BroadcastError` if broadcast fails.
   """
   @spec broadcast_from(atom, pid, binary, term) :: :ok | no_return
-  def broadcast_from!(server, from_pid, topic, message) when is_pid(from_pid) do
+  def broadcast_from!(server, from_pid, topic, message) when is_atom(server) and is_pid(from_pid) do
     case broadcast_from(server, from_pid, topic, message) do
       :ok -> :ok
       {:error, reason} -> raise BroadcastError, message: reason
     end
   end
 
-  defp call(server, msg) do
-    GenServer.call(server, msg) |> perform
+  defp call(server, kind, args) do
+    [{^kind, module, head}] = :ets.lookup(server, kind)
+    apply(module, kind, head ++ args)
   end
-
-  defp perform({:perform, {mod, func, args}}) do
-    apply(mod, func, args) |> perform
-  end
-
-  defp perform(result), do: result
 end

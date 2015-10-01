@@ -10,7 +10,7 @@ defmodule Phoenix.LocalTest do
   test "subscribe/2 joins a pid to a topic and broadcast/2 sends messages", config do
     # subscribe
     pid = spawn fn -> :timer.sleep(:infinity) end
-    assert Local.subscribers(config.test, "foo") |> Enum.to_list == []
+    assert Local.subscribers(config.test, "foo") == []
     assert :ok = Local.subscribe(config.test, self, "foo")
     assert :ok = Local.subscribe(config.test, pid, "foo")
     assert :ok = Local.subscribe(config.test, self, "bar")
@@ -24,7 +24,7 @@ defmodule Phoenix.LocalTest do
     assert_received :hellobar
     assert Process.info(pid)[:messages] == [:hellofoo]
 
-    assert {:error, :no_topic} = Local.broadcast(config.test, :none, "ksfjlfsf", :hellobar)
+    assert :ok = Local.broadcast(config.test, :none, "unknown", :hellobar)
     assert Process.info(self)[:messages] == []
   end
 
@@ -33,12 +33,12 @@ defmodule Phoenix.LocalTest do
     assert :ok = Local.subscribe(config.test, self, "topic1")
     assert :ok = Local.subscribe(config.test, pid, "topic1")
 
-    assert Enum.sort(Local.subscribers(config.test, "topic1")) ==
-           Enum.sort([self, pid])
+    assert Local.subscribers(config.test, "topic1") == [self, pid]
+    assert Local.subscribers_with_fastlanes(config.test, "topic1") ==
+           [{self, nil}, {pid, nil}]
 
     assert :ok = Local.unsubscribe(config.test, self, "topic1")
-    assert Enum.sort(Local.subscribers(config.test, "topic1")) ==
-           [pid]
+    assert Local.subscribers(config.test, "topic1") == [pid]
   end
 
   test "unsubscribe/2 gargabes collect topic when there are no more subscribers", config do
@@ -65,8 +65,9 @@ defmodule Phoenix.LocalTest do
     Process.exit(pid,  :kill)
     assert_receive {:DOWN, ^ref, _, _, _}
 
-    assert Enum.sort(Local.subscribers(config.test, "topic5")) == Enum.sort([self])
-    assert Enum.sort(Local.subscribers(config.test, "topic6")) == Enum.sort([])
+    assert Local.subscription(config.test, pid) == :error
+    assert Local.subscribers(config.test, "topic5") == [self]
+    assert Local.subscribers(config.test, "topic6") == []
 
     # Assert topic was also garbage collected
     assert Local.list(config.test) == ["topic5"]
@@ -76,11 +77,11 @@ defmodule Phoenix.LocalTest do
     assert :ok = Local.subscribe(config.test, self, "topic7")
     assert :ok = Local.subscribe(config.test, self, "topic8")
 
-    {:ok, topics} = Local.subscription(config.test, self)
+    {:ok, topics, _fastlanes} = Local.subscription(config.test, self)
     assert Enum.sort(topics) == ["topic7", "topic8"]
 
     assert :ok = Local.unsubscribe(config.test, self, "topic7")
-    assert {:ok, topics} = Local.subscription(config.test, self)
+    assert {:ok, topics, _fastlanes} = Local.subscription(config.test, self)
     assert Enum.sort(topics) == ["topic8"]
 
     :ok = Local.unsubscribe(config.test, self, "topic8")

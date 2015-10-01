@@ -1,8 +1,6 @@
-Code.require_file "http_client.exs", __DIR__
+Code.require_file "../../support/http_client.exs", __DIR__
 
 defmodule Phoenix.Integration.EndpointTest do
-  # This test case needs to be sync because we rely on
-  # log capture which is global.
   use ExUnit.Case
 
   alias Phoenix.Integration.AdapterTest.ProdEndpoint
@@ -31,7 +29,6 @@ defmodule Phoenix.Integration.EndpointTest do
     @moduledoc """
     Let's use a plug router to test this endpoint.
     """
-
     use Plug.Router
 
     plug :match
@@ -93,7 +90,7 @@ defmodule Phoenix.Integration.EndpointTest do
       @before_compile Wrapper
 
       plug :oops
-      plug :router, Router
+      plug Router
 
       @doc """
       Verify errors from the plug stack too (before the router).
