@@ -1,13 +1,7 @@
-# Define it at the top to guarantee there is no scope
-# leakage from the test case.
-
 defmodule Phoenix.Router.PipelineTest.SampleController do
-  use Phoenix.Controller
+  use Phoenix.Controller, formats: []
   def index(conn, _params), do: text(conn, "index")
-  def crash(_conn, _params), do: raise "crash!"
-
-  # Let's also define a custom plug that we will
-  # use in our router as part of a pipeline
+  def crash(_conn, _params), do: raise("crash!")
   def noop_plug(conn, _opts), do: conn
 end
 
@@ -74,11 +68,11 @@ defmodule Phoenix.Router.PipelineTest.Router do
   end
 
   defp put_assign(conn, value) do
-    assign conn, :stack, value
+    assign(conn, :stack, [value | conn.assigns[:stack] || []])
   end
 
   defp put_params(conn, _) do
-    assign conn, :params, conn.params
+    assign(conn, :params, conn.params)
   end
 end
 
@@ -95,26 +89,22 @@ defmodule Phoenix.Router.PipelineTest do
 
   test "does not invoke pipelines at root" do
     conn = call(Router, :get, "/root")
-    assert conn.private[:phoenix_pipelines] == []
     assert conn.assigns[:stack] == nil
   end
 
   test "invokes pipelines per scope" do
     conn = call(Router, :get, "/browser/root")
-    assert conn.private[:phoenix_pipelines] == [:browser]
-    assert conn.assigns[:stack] == "browser"
+    assert conn.assigns[:stack] == ["browser"]
   end
 
   test "invokes pipelines in a nested scope" do
     conn = call(Router, :get, "/browser/api/root")
-    assert conn.private[:phoenix_pipelines] == [:browser, :api]
-    assert conn.assigns[:stack] == "api"
+    assert conn.assigns[:stack] == ["api", "browser"]
   end
 
   test "invokes multiple pipelines" do
     conn = call(Router, :get, "/browser-api/root")
-    assert conn.private[:phoenix_pipelines] == [:browser, :api]
-    assert conn.assigns[:stack] == "api"
+    assert conn.assigns[:stack] == ["api", "browser"]
   end
 
   test "halts on pipeline multiple pipelines" do
@@ -133,5 +123,55 @@ defmodule Phoenix.Router.PipelineTest do
   test "merge parameters before invoking pipelines" do
     conn = call(Router, :get, "/browser/hello")
     assert conn.assigns[:params] == %{"id" => "hello"}
+  end
+
+  test "duplicate pipe_through's raises" do
+    assert_raise ArgumentError, ~r{duplicate pipe_through for :browser}, fn ->
+      defmodule DupPipeThroughRouter do
+        use Phoenix.Router, otp_app: :phoenix
+
+        pipeline :browser do
+        end
+
+        scope "/" do
+          pipe_through [:browser, :auth]
+          pipe_through [:browser]
+        end
+      end
+    end
+
+    assert_raise ArgumentError, ~r{duplicate pipe_through for :browser}, fn ->
+      defmodule DupScopedPipeThroughRouter do
+        use Phoenix.Router, otp_app: :phoenix
+
+        pipeline :browser do
+        end
+
+        scope "/" do
+          pipe_through [:browser]
+
+          scope "/nested" do
+            pipe_through [:browser]
+          end
+        end
+      end
+    end
+  end
+
+  test "pipeline raises on conflict" do
+    assert_raise ArgumentError, ~r{there is an import from Kernel with the same name}, fn ->
+      defmodule ConflictingPipeline do
+        use Phoenix.Router, otp_app: :phoenix
+
+        pipeline :raise do
+          plug Plug.Head
+        end
+
+        scope "/" do
+          pipe_through [:raise]
+          get "/", UnknownController, :index
+        end
+      end
+    end
   end
 end

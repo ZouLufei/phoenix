@@ -1,60 +1,98 @@
-![phoenix logo](https://raw.githubusercontent.com/phoenixframework/phoenix/master/priv/static/phoenix.png)
-> ### Productive. Reliable. Fast.
-> A productive web framework that does not compromise speed and maintainability.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./priv/static/phoenix-orange.png" />
+  <source media="(prefers-color-scheme: light)" srcset="./priv/static/phoenix.png" />
+  <img src="./priv/static/phoenix.png" alt="Phoenix logo" />
+</picture>
 
-[![Build Status](https://api.travis-ci.org/phoenixframework/phoenix.svg)](https://travis-ci.org/phoenixframework/phoenix)
-[![Inline docs](http://inch-ci.org/github/phoenixframework/phoenix.svg)](http://inch-ci.org/github/phoenixframework/phoenix)
+> Peace of mind from prototype to production.
+
+[![Build Status](https://github.com/phoenixframework/phoenix/workflows/CI/badge.svg)](https://github.com/phoenixframework/phoenix/actions/workflows/ci.yml) [![Hex.pm](https://img.shields.io/hexpm/v/phoenix.svg)](https://hex.pm/packages/phoenix) [![Documentation](https://img.shields.io/badge/documentation-gray)](https://hexdocs.pm/phoenix)
 
 ## Getting started
 
-See the official site at http://www.phoenixframework.org/
+See the official site at <https://www.phoenixframework.org/>.
+
+Install the latest version of Phoenix by following the instructions at <https://hexdocs.pm/phoenix/installation.html#phoenix>.
 
 ## Documentation
 
-API documentation is available at [http://hexdocs.pm/phoenix](http://hexdocs.pm/phoenix)
+API documentation is available at <https://hexdocs.pm/phoenix>.
+
+Phoenix.js documentation is available at <https://hexdocs.pm/phoenix/js>.
 
 ## Contributing
 
-We appreciate any contribution to Phoenix. Check our [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [CONTRIBUTING.md](CONTRIBUTING.md) guides for more information. We usually keep a list of features and bugs [in the issue tracker][2].
+We appreciate any contribution to Phoenix. Check our [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [CONTRIBUTING.md](CONTRIBUTING.md) guides for more information. We usually keep a list of features and bugs in the [issue tracker][4].
 
-### Running a Phoenix master project
+### Generating a Phoenix project from unreleased versions
+
+You can create a new project using the latest Phoenix source installer (the `phx.new` Mix task) with the following steps:
+
+1. Remove any previously installed `phx_new` archives so that Mix will pick up the local source code. This can be done with `mix archive.uninstall phx_new` or by simply deleting the file, which is usually in `~/.mix/archives/`.
+2. Copy this repo via `git clone https://github.com/phoenixframework/phoenix` or by downloading it
+3. Run the `phx.new` Mix task from within the `installer` directory, for example:
 
 ```bash
-$ cd installer
-$ mix phoenix.new path/to/your/project --dev
+cd phoenix/installer
+mix phx.new dev_app --dev
 ```
 
-The command above will create a new project using your current Phoenix checkout, thanks to the `--dev` flag.
+The `--dev` flag will configure your new project's `:phoenix` dep as a relative path dependency, pointing to your local Phoenix checkout:
 
-Note that `path/to/your/project` must be within the directory containing the Phoenix source code. This is so that a relative path can be used for the `:phoenix` dependency.
-
-The command must be run from the `installer` directory. See the discussion in [PR 1224](https://github.com/phoenixframework/phoenix/pull/1224) for more information.
-
-In order to test changes to the installer (the `phoenix.new` Mix task) itself, first remove any installed archive so that Mix will pick up the local source code.  This can be done with `mix archive.uninstall phoenix_new-#.#.#.ez` or by simply deleting the file, which is usually in `~/.mix/archives/`. See [issue 3376](https://github.com/elixir-lang/elixir/issues/3376) for more information.
-
-### Building phoenix.js
-
-```bash
-$ npm install
-$ npm install -g brunch
-$ brunch watch
+```elixir
+defp deps do
+  [{:phoenix, path: "../..", override: true},
 ```
 
-### Building docs from source
+To create projects outside of the `installer/` directory, add the latest archive to your machine by following the instructions in [installer/README.md](https://github.com/phoenixframework/phoenix/blob/main/installer/README.md)
+
+### Building from source
+
+To build the documentation:
 
 ```bash
-$ MIX_ENV=docs mix docs
+npm install
+MIX_ENV=docs mix docs
+```
+
+To build Phoenix:
+
+```bash
+mix deps.get
+mix compile
+```
+
+To build the Phoenix installer:
+
+```bash
+mix deps.get
+mix compile
+mix archive.build
+```
+
+To build Phoenix.js:
+
+```bash
+cd assets
+npm install
 ```
 
 ## Important links
 
-* \#elixir-lang on freenode IRC
-* [elixir-lang slack channel][1]
-* [Issue tracker][2]
-* [phoenix-talk Mailing list (questions)][3]
-* [phoenix-core Mailing list (development)][4]
+* [#elixir][1] on [Libera][2] IRC
+* [elixir-lang Slack channel][3]
+* [Issues tracker][4]
+* [Phoenix Forum (questions and proposals)][5]
+* Visit Phoenix's sponsor, DockYard, for expert [Phoenix Consulting](https://dockyard.com/phoenix-consulting)
 
-  [1]: https://elixir-slackin.herokuapp.com/
-  [2]: https://github.com/phoenixframework/phoenix/issues
-  [3]: http://groups.google.com/group/phoenix-talk
-  [4]: http://groups.google.com/group/phoenix-core
+  [1]: https://web.libera.chat/?channels=#elixir
+  [2]: https://libera.chat/
+  [3]: https://elixir-lang.slack.com/
+  [4]: https://github.com/phoenixframework/phoenix/issues
+  [5]: https://elixirforum.com/c/phoenix-forum
+
+## Copyright and License
+
+Copyright (c) 2014, Chris McCord.
+
+Phoenix source code is licensed under the [MIT License](LICENSE.md).

@@ -9,170 +9,224 @@ defmodule Phoenix.Router.Route do
   @doc """
   The `Phoenix.Router.Route` struct. It stores:
 
-    * :verb - the HTTP verb as an upcased string
-    * :kind - the kind of route, one of `:match`, `:forward`
-    * :path - the normalized path as string
-    * :host - the request host or host prefix
-    * :plug - the plug module
-    * :opts - the plug options
-    * :helper - the name of the helper as a string (may be nil)
-    * :private - the private route info
-    * :assigns - the route info
-    * :pipe_through - the pipeline names as a list of atoms
-
+    * `:verb` - the HTTP verb as an atom
+    * `:line` - the line the route was defined
+    * `:kind` - the kind of route, either `:match` or `:forward`
+    * `:path` - the normalized path as string
+    * `:hosts` - the list of request hosts or host prefixes
+    * `:plug` - the plug module
+    * `:plug_opts` - the plug options
+    * `:helper` - the name of the helper as a string (may be nil)
+    * `:private` - the private route info
+    * `:assigns` - the route info
+    * `:pipe_through` - the pipeline names as a list of atoms
+    * `:metadata` - general metadata used on telemetry events and route info
+    * `:trailing_slash?` - whether or not the helper functions append a trailing slash
+    * `:warn_on_verify?` - whether or not to warn on route verification
   """
 
-  defstruct [:verb, :kind, :path, :host, :plug, :opts,
-             :helper, :private, :pipe_through, :assigns]
+  defstruct [
+    :verb,
+    :line,
+    :kind,
+    :path,
+    :hosts,
+    :plug,
+    :plug_opts,
+    :helper,
+    :private,
+    :pipe_through,
+    :assigns,
+    :metadata,
+    :trailing_slash?,
+    :warn_on_verify?
+  ]
 
   @type t :: %Route{}
+
+  @doc "Used as a plug on forwarding"
+  def init(opts), do: opts
+
+  @doc "Used as a plug on forwarding"
+  def call(%{path_info: path, script_name: script} = conn, {fwd_segments, plug, opts}) do
+    new_path = path -- fwd_segments
+    {base, ^new_path} = Enum.split(path, length(path) - length(new_path))
+    conn = %{conn | path_info: new_path, script_name: script ++ base}
+    conn = plug.call(conn, plug.init(opts))
+    %{conn | path_info: path, script_name: script}
+  end
 
   @doc """
   Receives the verb, path, plug, options and helper
   and returns a `Phoenix.Router.Route` struct.
   """
-  @spec build(:match | :forward, String.t, String.t, String.t | nil, atom, atom, atom | nil, atom, %{}, %{}) :: t
-  def build(kind, verb, path, host, plug, opts, helper, pipe_through, private, assigns)
-      when is_atom(verb) and (is_binary(host) or is_nil(host)) and
-           is_atom(plug) and (is_binary(helper) or is_nil(helper)) and
-           is_list(pipe_through) and is_map(private and is_map(assigns))
-           and kind in [:match, :forward] do
-
-    %Route{kind: kind, verb: verb, path: path, host: host, private: private,
-           plug: plug, opts: opts, helper: helper,
-           pipe_through: pipe_through, assigns: assigns}
+  @spec build(
+          non_neg_integer,
+          :match | :forward,
+          atom,
+          String.t(),
+          String.t() | nil,
+          atom,
+          atom,
+          atom | nil,
+          list(atom),
+          map,
+          map,
+          map,
+          boolean,
+          boolean
+        ) :: t
+  def build(
+        line,
+        kind,
+        verb,
+        path,
+        hosts,
+        plug,
+        plug_opts,
+        helper,
+        pipe_through,
+        private,
+        assigns,
+        metadata,
+        trailing_slash?,
+        warn_on_verify?
+      )
+      when is_atom(verb) and is_list(hosts) and
+             is_atom(plug) and (is_binary(helper) or is_nil(helper)) and
+             is_list(pipe_through) and is_map(private) and is_map(assigns) and
+             is_map(metadata) and kind in [:match, :forward] and
+             is_boolean(trailing_slash?) do
+    %Route{
+      kind: kind,
+      verb: verb,
+      path: path,
+      hosts: hosts,
+      private: private,
+      plug: plug,
+      plug_opts: plug_opts,
+      helper: helper,
+      pipe_through: pipe_through,
+      assigns: assigns,
+      line: line,
+      metadata: metadata,
+      trailing_slash?: trailing_slash?,
+      warn_on_verify?: warn_on_verify?
+    }
   end
 
   @doc """
-  Builds the expressions used by the route.
+  Builds the compiled expressions used by the route.
   """
   def exprs(route) do
     {path, binding} = build_path_and_binding(route)
 
-    %{path: path,
-      host: build_host(route.host),
-      verb_match: verb_match(route.verb),
+    %{
+      path: path,
       binding: binding,
-      dispatch: build_dispatch(route, binding)}
+      dispatch: build_dispatch(route),
+      hosts: build_host_match(route.hosts),
+      path_params: build_path_params(binding),
+      prepare: build_prepare(route),
+      verb_match: verb_match(route.verb)
+    }
+  end
+
+  def build_host_match([]), do: [Plug.Router.Utils.build_host_match(nil)]
+
+  def build_host_match([_ | _] = hosts) do
+    for host <- hosts, do: Plug.Router.Utils.build_host_match(host)
   end
 
   defp verb_match(:*), do: Macro.var(:_verb, nil)
   defp verb_match(verb), do: verb |> to_string() |> String.upcase()
 
+  defp build_path_params(binding), do: {:%{}, [], binding}
+
   defp build_path_and_binding(%Route{path: path} = route) do
-    {params, segments} = case route.kind do
-      :forward -> Plug.Router.Utils.build_path_match(path <> "/*_forward_path_info")
-      :match   -> Plug.Router.Utils.build_path_match(path)
-    end
-
-    binding = for var <- params, var != :_forward_path_info do
-      {Atom.to_string(var), Macro.var(var, nil)}
-    end
-
-    {segments, binding}
-  end
-
-  defp build_host(host) do
-    cond do
-      is_nil(host)             -> quote do: _
-      String.last(host) == "." -> quote do: unquote(host) <> _
-      true                     -> host
-    end
-  end
-
-  defp build_dispatch(route, binding) do
-    exprs =
-      [maybe_binding(binding),
-       maybe_merge(:private, route.private),
-       maybe_merge(:assigns, route.assigns),
-       build_pipes(route)]
-
-    {:__block__, [], Enum.filter(exprs, & &1 != nil)}
-  end
-
-  defp maybe_merge(key, data) do
-    if map_size(data) > 0 do
-      quote do
-        var!(conn) =
-          update_in var!(conn).unquote(key), &Map.merge(&1, unquote(Macro.escape(data)))
+    {_params, segments} =
+      case route.kind do
+        :forward -> Plug.Router.Utils.build_path_match(path <> "/*_forward_path_info")
+        :match -> Plug.Router.Utils.build_path_match(path)
       end
-    end
+
+    rewrite_segments(segments)
   end
 
-  defp maybe_binding([]), do: nil
-  defp maybe_binding(binding) do
-    quote do
-      var!(conn) =
-        update_in var!(conn).params, &Map.merge(&1, unquote({:%{}, [], binding}))
-    end
-  end
+  # We rewrite segments to use consistent variable naming as we want to group routes later on.
+  defp rewrite_segments(segments) do
+    {segments, {binding, _counter}} =
+      Macro.prewalk(segments, {[], 0}, fn
+        {name, _meta, nil}, {binding, counter}
+        when is_atom(name) and name != :_forward_path_info ->
+          var = Macro.var(:"arg#{counter}", __MODULE__)
+          {var, {[{Atom.to_string(name), var} | binding], counter + 1}}
 
-  defp build_pipes(%Route{kind: :forward} = route) do
-    {_params, fwd_segments} = Plug.Router.Utils.build_path_match(route.path)
-
-    quote do
-      var!(conn)
-      |> Plug.Conn.put_private(:phoenix_pipelines, unquote(route.pipe_through))
-      |> Plug.Conn.put_private(:phoenix_route, fn conn ->
-        # We need to store this in a variable so the compiler
-        # does not see a call and then suddenly start tracking
-        # changes in the controller.
-        plug = unquote(route.plug)
-        opts = plug.init(unquote(route.opts))
-        Phoenix.Router.Route.forward(conn, unquote(fwd_segments), plug, opts)
+        other, acc ->
+          {other, acc}
       end)
-    end |> pipe_through(route)
+
+    {segments, Enum.reverse(binding)}
   end
 
-  defp build_pipes(route) do
-    quote do
-      var!(conn)
-      |> Plug.Conn.put_private(:phoenix_pipelines, unquote(route.pipe_through))
-      |> Plug.Conn.put_private(:phoenix_route, fn conn ->
-        # We need to store this in a variable so the compiler
-        # does not see a call and then suddenly start tracking
-        # changes in the controller.
-        plug = unquote(route.plug)
-        opts = plug.init(unquote(route.opts))
-        plug.call(conn, opts)
-      end)
-    end |> pipe_through(route)
-  end
+  defp build_prepare(route) do
+    {match_params, merge_params} = build_params()
+    {match_private, merge_private} = build_prepare_expr(:private, route.private)
+    {match_assigns, merge_assigns} = build_prepare_expr(:assigns, route.assigns)
 
-  defp pipe_through(initial, route) do
-    plugs = route.pipe_through |> Enum.reverse |> Enum.map(&{&1, [], true})
-    {conn, body} = Plug.Builder.compile(__ENV__, plugs, [])
+    match_all = match_params ++ match_private ++ match_assigns
+    merge_all = merge_params ++ merge_private ++ merge_assigns
+
     quote do
-      unquote(conn) = unquote(initial)
-      unquote(body)
+      %{unquote_splicing(match_all)} = var!(conn, :conn)
+      %{var!(conn, :conn) | unquote_splicing(merge_all)}
     end
+  end
+
+  defp build_prepare_expr(_key, data) when data == %{}, do: {[], []}
+
+  defp build_prepare_expr(key, data) do
+    var = Macro.var(key, :conn)
+    merge = quote(do: Map.merge(unquote(var), unquote(Macro.escape(data))))
+    {[{key, var}], [{key, merge}]}
+  end
+
+  defp build_dispatch(%Route{kind: :match, plug: plug, plug_opts: plug_opts}) do
+    quote do
+      {unquote(plug), unquote(Macro.escape(plug_opts))}
+    end
+  end
+
+  defp build_dispatch(%Route{
+         kind: :forward,
+         plug: plug,
+         plug_opts: plug_opts,
+         metadata: metadata
+       }) do
+    quote do
+      {
+        Phoenix.Router.Route,
+        {unquote(metadata.forward), unquote(plug), unquote(Macro.escape(plug_opts))}
+      }
+    end
+  end
+
+  defp build_params() do
+    params = Macro.var(:params, :conn)
+    path_params = Macro.var(:path_params, :conn)
+
+    merge_params =
+      quote(do: Phoenix.Router.Route.merge_params(unquote(params), unquote(path_params)))
+
+    {
+      [{:params, params}],
+      [{:params, merge_params}, {:path_params, path_params}]
+    }
   end
 
   @doc """
-  Forwards requests to another Plug at a new path.
+  Merges params from router.
   """
-  def forward(%Plug.Conn{path_info: path, script_name: script} = conn, fwd_segments, target, opts) do
-    new_path = path -- fwd_segments
-    {base, ^new_path} = Enum.split(path, length(path) - length(new_path))
-    conn = %{conn | path_info: new_path, script_name: script ++ base} |> target.call(opts)
-    %{conn | path_info: path, script_name: script}
-  end
-
-  @doc """
-  Validates and returns the list of forward path segments.
-
-  Raises RuntimeError plug is already forwarded or path contains
-  a dynamic segment.
-  """
-  def forward_path_segments(path, plug, phoenix_forwards) do
-    case Plug.Router.Utils.build_path_match(path) do
-      {[], path_segments} ->
-        if phoenix_forwards[plug] do
-          raise ArgumentError, "`#{inspect plug}` has already been forwarded to. A module can only be forwarded a single time."
-        end
-        path_segments
-      _ ->
-        raise ArgumentError, "Dynamic segment `\"#{path}\"` not allowed when forwarding. Use a static path instead."
-    end
-  end
+  def merge_params(%Plug.Conn.Unfetched{}, path_params), do: path_params
+  def merge_params(params, path_params), do: Map.merge(params, path_params)
 end

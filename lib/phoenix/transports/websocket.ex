@@ -1,198 +1,130 @@
 defmodule Phoenix.Transports.WebSocket do
-  @moduledoc """
-  Socket transport for websocket clients.
+  @moduledoc false
+  #
+  # How WebSockets Work In Phoenix
+  #
+  # WebSocket support in Phoenix is implemented on top of the `WebSockAdapter` library. Upgrade
+  # requests from clients originate as regular HTTP requests that get routed to this module via
+  # Plug. These requests are then upgraded to WebSocket connections via
+  # `WebSockAdapter.upgrade/4`, which takes as an argument the handler for a given socket endpoint
+  # as configured in the application's Endpoint. This handler module must implement the
+  # transport-agnostic `Phoenix.Socket.Transport` behaviour (this same behaviour is also used for
+  # other transports such as long polling). Because this behaviour is a superset of the `WebSock`
+  # behaviour, the `WebSock` library is able to use the callbacks in the `WebSock` behaviour to
+  # call this handler module directly for the rest of the WebSocket connection's lifetime.
+  #
+  @behaviour Plug
 
-  ## Configuration
+  @connect_info_opts [:check_csrf]
 
-  The websocket is configurable in your socket:
+  @auth_token_prefix "base64url.bearer.phx."
 
-      transport :websocket, Phoenix.Transports.WebSocket,
-        timeout: :infinity,
-        serializer: Phoenix.Transports.WebSocketSerializer,
-        transport_log: false
+  import Plug.Conn
 
-    * `:timeout` - the timeout for keeping websocket connections
-      open after it last received data
-
-    * `:transport_log` - if the transport layer itself should log and, if so, the level
-
-    * `:serializer` - the serializer for websocket messages
-
-    * `:check_origin` - if we should check the origin of requests when the
-      origin header is present. It defaults to true and, in such cases,
-      it will check against the host value in `YourApp.Endpoint.config(:url)[:host]`.
-      It may be set to `false` (not recommended) or to a list of explicitly
-      allowed origins
-
-    * `:heartbeat` - the heartbeat interval in milliseconds, default `30_000`
-
-  ## Serializer
-
-  By default, JSON encoding is used to broker messages to and from clients.
-  A custom serializer may be given as module which implements the `encode!/1`
-  and `decode!/2` functions defined by the `Phoenix.Transports.Serializer`
-  behaviour.
-
-  The `encode!/1` function must return a tuple in the format
-  `{:socket_push, :text | :binary, String.t | binary}`.
-  """
-
-  @behaviour Phoenix.Socket.Transport
+  alias Phoenix.Socket.{V1, V2, Transport}
 
   def default_config() do
-    [serializer: Phoenix.Transports.WebSocketSerializer,
-     timeout: :infinity,
-     transport_log: false,
-     heartbeat: 30_000]
+    [
+      path: "/websocket",
+      serializer: [{V1.JSONSerializer, "~> 1.0.0"}, {V2.JSONSerializer, "~> 2.0.0"}],
+      error_handler: {__MODULE__, :handle_error, []},
+      timeout: 60_000,
+      transport_log: false,
+      compress: false
+    ]
   end
 
-  def handlers() do
-    %{cowboy: Phoenix.Endpoint.CowboyWebSocket}
-  end
+  def init(opts), do: opts
 
-  ## Callbacks
+  def call(%{method: "GET"} = conn, {endpoint, handler, opts}) do
+    subprotocols =
+      if opts[:auth_token] do
+        # when using Sec-WebSocket-Protocol for passing an auth token
+        # the server must reply with one of the subprotocols in the request;
+        # therefore we include "phoenix" as allowed subprotocol and include it on the client
+        ["phoenix" | Keyword.get(opts, :subprotocols, [])]
+      else
+        opts[:subprotocols]
+      end
 
-  import Plug.Conn, only: [fetch_query_params: 1, send_resp: 3]
-  import Phoenix.Utils, only: [now_ms: 0]
+    conn
+    |> fetch_query_params()
+    |> Transport.code_reload(endpoint, opts)
+    |> Transport.transport_log(opts[:transport_log])
+    |> Transport.check_origin(handler, endpoint, opts)
+    |> maybe_auth_token_from_header(opts[:auth_token])
+    |> Transport.check_subprotocols(subprotocols)
+    |> case do
+      %{halted: true} = conn ->
+        conn
 
-  alias Phoenix.Socket.Broadcast
-  alias Phoenix.Socket.Transport
+      %{params: params} = conn ->
+        keys = Keyword.get(opts, :connect_info, [])
 
-  @doc false
-  def init(%Plug.Conn{method: "GET"} = conn, {endpoint, handler, transport}) do
-    {_, opts} = handler.__transport__(transport)
+        connect_info =
+          Transport.connect_info(conn, endpoint, keys, Keyword.take(opts, @connect_info_opts))
 
-    conn =
-      conn
-      |> Plug.Conn.fetch_query_params
-      |> Transport.transport_log(opts[:transport_log])
-      |> Transport.force_ssl(handler, endpoint, opts)
-      |> Transport.check_origin(handler, endpoint, opts)
+        config = %{
+          endpoint: endpoint,
+          transport: :websocket,
+          options: opts,
+          params: params,
+          connect_info: connect_info
+        }
 
-    case conn do
-      %{halted: false} = conn ->
-        params     = conn.params
-        serializer = Keyword.fetch!(opts, :serializer)
+        case handler.connect(config) do
+          {:ok, arg} ->
+            try do
+              conn
+              |> WebSockAdapter.upgrade(handler, arg, opts)
+              |> halt()
+            rescue
+              e in WebSockAdapter.UpgradeError -> send_resp(conn, 400, e.message)
+            end
 
-        case Transport.connect(endpoint, handler, transport, __MODULE__, serializer, params) do
-          {:ok, socket} ->
-            {:ok, conn, {__MODULE__, {socket, opts}}}
           :error ->
             send_resp(conn, 403, "")
-            {:error, conn}
+
+          {:error, reason} ->
+            {m, f, args} = opts[:error_handler]
+            apply(m, f, [conn, reason | args])
         end
-      %{halted: true} = conn ->
-        {:error, conn}
     end
   end
 
-  def init(conn, _) do
-    send_resp(conn, :bad_request, "")
-    {:error, conn}
-  end
+  def call(conn, _), do: send_resp(conn, 400, "")
 
-  @doc false
-  def ws_init({socket, config}) do
-    Process.flag(:trap_exit, true)
-    serializer = Keyword.fetch!(config, :serializer)
-    timeout    = Keyword.fetch!(config, :timeout)
-    heartbeat  = Keyword.fetch!(config, :heartbeat)
+  def handle_error(conn, _reason), do: send_resp(conn, 403, "")
 
-    if socket.id, do: socket.endpoint.subscribe(self, socket.id, link: true)
+  defp maybe_auth_token_from_header(conn, true) do
+    case get_req_header(conn, "sec-websocket-protocol") do
+      [] ->
+        conn
 
-    :timer.send_interval(heartbeat, :phoenix_heartbeat)
+      [subprotocols_header | _] ->
+        request_subprotocols =
+          subprotocols_header
+          |> Plug.Conn.Utils.list()
+          |> Enum.split_with(&String.starts_with?(&1, @auth_token_prefix))
 
-    {:ok, %{socket: socket,
-            channels: HashDict.new,
-            channels_inverse: HashDict.new,
-            client_last_active: now_ms(),
-            heartbeat_interval: heartbeat,
-            serializer: serializer}, timeout}
-  end
+        case request_subprotocols do
+          {[@auth_token_prefix <> encoded_token], actual_subprotocols} ->
+            token = Base.decode64!(encoded_token, padding: false)
 
-  @doc false
-  def ws_handle(opcode, payload, state) do
-    msg   = state.serializer.decode!(payload, opcode: opcode)
-    state = bump_client_last_active(state)
+            conn
+            |> put_private(:phoenix_transport_auth_token, token)
+            |> set_actual_subprotocols(actual_subprotocols)
 
-    case Transport.dispatch(msg, state.channels, state.socket) do
-      :noreply ->
-        {:ok, state}
-      {:reply, reply_msg} ->
-        encode_reply(reply_msg, state)
-      {:joined, channel_pid, reply_msg} ->
-        encode_reply(reply_msg, put(state, msg.topic, channel_pid))
-      {:error, _reason, error_reply_msg} ->
-        encode_reply(error_reply_msg, state)
+          _ ->
+            conn
+        end
     end
   end
 
-  @doc false
-  def ws_info({:EXIT, channel_pid, reason}, state) do
-    case HashDict.get(state.channels_inverse, channel_pid) do
-      nil   -> {:ok, state}
-      topic ->
-        new_state = delete(state, topic, channel_pid)
-        encode_reply Transport.on_exit_message(topic, reason), new_state
-    end
-  end
+  defp maybe_auth_token_from_header(conn, _), do: conn
 
-  @doc false
-  def ws_info(%Broadcast{event: "disconnect"}, state) do
-    {:shutdown, state}
-  end
+  defp set_actual_subprotocols(conn, []), do: delete_req_header(conn, "sec-websocket-protocol")
 
-  def ws_info({:socket_push, _, _encoded_payload} = msg, state) do
-    format_reply(msg, state)
-  end
-
-  def ws_info(:phoenix_heartbeat, state) do
-    if client_unresponsive?(state) do
-      {:shutdown, state}
-    else
-      encode_reply Transport.heartbeat_message(), state
-    end
-  end
-
-  def ws_info(_, state) do
-    {:ok, state}
-  end
-
-  defp client_unresponsive?(state) do
-    now_ms() - state.client_last_active > (state.heartbeat_interval * 2)
-  end
-
-  @doc false
-  def ws_terminate(_reason, _state) do
-    :ok
-  end
-
-  @doc false
-  def ws_close(state) do
-    for {pid, _} <- state.channels_inverse do
-      Phoenix.Channel.Server.close(pid)
-    end
-  end
-
-  defp put(state, topic, channel_pid) do
-    %{state | channels: HashDict.put(state.channels, topic, channel_pid),
-              channels_inverse: HashDict.put(state.channels_inverse, channel_pid, topic)}
-  end
-
-  defp delete(state, topic, channel_pid) do
-    %{state | channels: HashDict.delete(state.channels, topic),
-              channels_inverse: HashDict.delete(state.channels_inverse, channel_pid)}
-  end
-
-  defp encode_reply(reply, state) do
-    format_reply(state.serializer.encode!(reply), state)
-  end
-
-  defp format_reply({:socket_push, encoding, encoded_payload}, state) do
-    {:reply, {encoding, encoded_payload}, state}
-  end
-
-  defp bump_client_last_active(state) do
-    %{state | client_last_active: now_ms()}
-  end
+  defp set_actual_subprotocols(conn, subprotocols),
+    do: put_req_header(conn, "sec-websocket-protocol", Enum.join(subprotocols, ", "))
 end

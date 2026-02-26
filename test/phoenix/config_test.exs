@@ -2,37 +2,35 @@ defmodule Phoenix.ConfigTest do
   use ExUnit.Case, async: true
   import Phoenix.Config
 
-  setup meta do
-    config = [parsers: false, custom: true, otp_app: :phoenix_config]
-    Application.put_env(:config_app, meta.test, config)
-    :ok
-  end
-
   @defaults [static: [at: "/"]]
+  @config [parsers: false, custom: true, otp_app: :phoenix_config]
+  @all @config ++ @defaults
 
   test "reads configuration from env", meta do
+    Application.put_env(:config_app, meta.test, @config)
     config = from_env(:config_app, meta.test, [static: true])
     assert config[:parsers] == false
     assert config[:custom]  == true
     assert config[:static]  == true
-
-    assert from_env(:unknown_app, meta.test, [static: true]) ==
-           [static: true]
   end
 
   test "starts an ets table as part of the module", meta do
-    {:ok, _pid} = start_link(:config_app, meta.test, @defaults)
+    {:ok, _pid} = start_link({meta.test, @all, @defaults, []})
     assert :ets.info(meta.test, :name) == meta.test
     assert :ets.lookup(meta.test, :parsers) == [parsers: false]
     assert :ets.lookup(meta.test, :static)  == [static: [at: "/"]]
     assert :ets.lookup(meta.test, :custom)  == [custom: true]
+  end
 
-    assert stop(meta.test) == :ok
-    assert :ets.info(meta.test, :name) == :undefined
+  test "raises with warning about compile time when table not started" do
+    assert_raise RuntimeError,
+                 "could not find ets table for endpoint Fooz. Make sure your endpoint is started and note you cannot access endpoint functions at compile-time",
+                 fn -> cache(Fooz, :foo, fn _ -> {:nocache, :bar} end) end
   end
 
   test "can change configuration", meta do
-    {:ok, _pid} = start_link(:config_app, meta.test, @defaults)
+    {:ok, pid} = start_link({meta.test, @all, @defaults, []})
+    ref = Process.monitor(pid)
 
     # Nothing changed
     config_change(meta.test, [], [])
@@ -48,11 +46,13 @@ defmodule Phoenix.ConfigTest do
 
     # Module removed
     config_change(meta.test, [], [meta.test])
+
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
     assert :ets.info(meta.test, :name) == :undefined
   end
 
   test "can cache", meta do
-    {:ok, _pid} = start_link(:config_app, meta.test, @defaults)
+    {:ok, _pid} = start_link({meta.test, @all, @defaults, []})
 
     assert cache(meta.test, :__hello__, fn _ -> {:nocache, 1} end) == 1
     assert cache(meta.test, :__hello__, fn _ -> {:cache, 2} end) == 2

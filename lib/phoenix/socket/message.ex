@@ -4,14 +4,17 @@ defmodule Phoenix.Socket.Message do
 
   The message format requires the following keys:
 
-    * `topic` - The string topic or topic:subtopic pair namespace, for
+    * `:topic` - The string topic or topic:subtopic pair namespace, for
       example "messages", "messages:123"
-    * `event`- The string event name, for example "phx_join"
-    * `payload` - The message payload
-    * `ref` - The unique string ref
+    * `:event`- The string event name, for example "phx_join"
+    * `:payload` - The message payload
+    * `:ref` - The unique string ref
+    * `:join_ref` - The unique string ref when joining
+
   """
 
-  defstruct topic: nil, event: nil, payload: nil, ref: nil
+  @type t :: %Phoenix.Socket.Message{}
+  defstruct topic: nil, event: nil, payload: nil, ref: nil, join_ref: nil
 
   @doc """
   Converts a map with string keys into a message struct.
@@ -24,12 +27,26 @@ defmodule Phoenix.Socket.Message do
         topic: Map.fetch!(map, "topic"),
         event: Map.fetch!(map, "event"),
         payload: Map.fetch!(map, "payload"),
-        ref: Map.fetch!(map, "ref")
+        ref: Map.fetch!(map, "ref"),
+        join_ref: Map.get(map, "join_ref")
       }
     rescue
       err in [KeyError] ->
-        raise Phoenix.Socket.InvalidMessageError, message: "missing key #{inspect err.key}"
+        raise Phoenix.Socket.InvalidMessageError, "missing key #{inspect(err.key)}"
     end
+  end
+
+  defimpl Inspect do
+    def inspect(%Phoenix.Socket.Message{} = msg, opts) do
+      processed_msg = process_message(msg)
+      Inspect.Any.inspect(processed_msg, opts)
+    end
+
+    defp process_message(%{payload: payload} = msg) when is_map(payload) do
+      %{msg | payload: Phoenix.Logger.filter_values(payload)}
+    end
+
+    defp process_message(msg), do: msg
   end
 end
 
@@ -39,14 +56,16 @@ defmodule Phoenix.Socket.Reply do
 
   The message format requires the following keys:
 
-    * `topic` - The string topic or topic:subtopic pair namespace, for example "messages", "messages:123"
-    * `status` - The reply status as an atom
-    * `payload` - The reply payload
-    * `ref` - The unique string ref
+    * `:topic` - The string topic or topic:subtopic pair namespace, for example "messages", "messages:123"
+    * `:status` - The reply status as an atom
+    * `:payload` - The reply payload
+    * `:ref` - The unique string ref
+    * `:join_ref` - The unique string ref when joining
 
   """
 
-  defstruct topic: nil, status: nil, payload: nil, ref: nil
+  @type t :: %Phoenix.Socket.Reply{}
+  defstruct topic: nil, status: nil, payload: nil, ref: nil, join_ref: nil
 end
 
 defmodule Phoenix.Socket.Broadcast do
@@ -55,11 +74,12 @@ defmodule Phoenix.Socket.Broadcast do
 
   The message format requires the following keys:
 
-    * `topic` - The string topic or topic:subtopic pair namespace, for example "messages", "messages:123"
-    * `event`- The string event name, for example "phx_join"
-    * `payload` - The message payload
+    * `:topic` - The string topic or topic:subtopic pair namespace, for example "messages", "messages:123"
+    * `:event`- The string event name, for example "phx_join"
+    * `:payload` - The message payload
 
   """
 
+  @type t :: %Phoenix.Socket.Broadcast{}
   defstruct topic: nil, event: nil, payload: nil
 end

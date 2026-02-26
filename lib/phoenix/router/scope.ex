@@ -4,47 +4,131 @@ defmodule Phoenix.Router.Scope do
 
   @stack :phoenix_router_scopes
   @pipes :phoenix_pipeline_scopes
+  @top :phoenix_top_scopes
 
-  defstruct path: nil, alias: nil, as: nil, pipes: [], host: nil, private: %{}, assigns: %{}
+  defstruct path: [],
+            alias: [],
+            as: [],
+            pipes: [],
+            hosts: [],
+            private: %{},
+            assigns: %{},
+            log: :debug,
+            trailing_slash?: false
 
   @doc """
   Initializes the scope.
   """
   def init(module) do
-    Module.put_attribute(module, @stack, [%Scope{}])
-    Module.put_attribute(module, @pipes, HashSet.new)
+    Module.put_attribute(module, @stack, [])
+    Module.put_attribute(module, @top, %Scope{})
+    Module.put_attribute(module, @pipes, MapSet.new())
   end
 
   @doc """
   Builds a route based on the top of the stack.
   """
-  def route(module, kind, verb, path, plug, plug_opts, opts) do
+  def route(line, module, kind, verb, path, plug, plug_opts, opts) do
+    unless is_atom(plug) do
+      raise ArgumentError, "routes expect a module plug as second argument, got: #{inspect(plug)}"
+    end
+
+    top = get_top(module)
+    path = validate_path(path)
     private = Keyword.get(opts, :private, %{})
     assigns = Keyword.get(opts, :assigns, %{})
-    as      = Keyword.get(opts, :as, Phoenix.Naming.resource_name(plug, "Controller"))
+    as = Keyword.get_lazy(opts, :as, fn -> Phoenix.Naming.resource_name(plug, "Controller") end)
+    alias? = Keyword.get(opts, :alias, true)
+    trailing_slash? = deprecated_trailing_slash(opts, top)
+    warn_on_verify? = Keyword.get(opts, :warn_on_verify, false)
 
-    {path, host, alias, as, pipes, private, assigns} =
-      join(module, path, plug, as, private, assigns)
-    Phoenix.Router.Route.build(kind, verb, path, host, alias, plug_opts, as, pipes, private, assigns)
+    if to_string(as) == "static" do
+      raise ArgumentError,
+            "`static` is a reserved route prefix generated from #{inspect(plug)} or `:as` option"
+    end
+
+    {path, alias, as, private, assigns} = join(top, path, plug, alias?, as, private, assigns)
+
+    metadata =
+      opts
+      |> Keyword.get(:metadata, %{})
+      |> Map.put(:log, Keyword.get(opts, :log, top.log))
+
+    metadata =
+      if kind == :forward do
+        Map.put(metadata, :forward, validate_forward!(path, plug))
+      else
+        metadata
+      end
+
+    Phoenix.Router.Route.build(
+      line,
+      kind,
+      verb,
+      path,
+      top.hosts,
+      alias,
+      plug_opts,
+      as,
+      top.pipes,
+      private,
+      assigns,
+      metadata,
+      trailing_slash?,
+      warn_on_verify?
+    )
+  end
+
+  defp validate_forward!(path, plug) when is_atom(plug) do
+    case Plug.Router.Utils.build_path_match(path) do
+      {[], path_segments} ->
+        path_segments
+
+      _ ->
+        raise ArgumentError,
+              "dynamic segment \"#{path}\" not allowed when forwarding. Use a static path instead"
+    end
+  end
+
+  defp validate_forward!(_, plug) do
+    raise ArgumentError, "forward expects a module as the second argument, #{inspect(plug)} given"
+  end
+
+  @doc """
+  Validates a path is a string and contains a leading prefix.
+  """
+  def validate_path("/" <> _ = path), do: path
+
+  def validate_path(path) when is_binary(path) do
+    IO.warn("router paths should begin with a forward slash, got: #{inspect(path)}")
+    "/" <> path
+  end
+
+  def validate_path(path) do
+    raise ArgumentError, "router paths must be strings, got: #{inspect(path)}"
   end
 
   @doc """
   Defines the given pipeline.
   """
   def pipeline(module, pipe) when is_atom(pipe) do
-    update_pipes module, &HashSet.put(&1, pipe)
+    update_pipes(module, &MapSet.put(&1, pipe))
   end
 
   @doc """
   Appends the given pipes to the current scope pipe through.
   """
-  def pipe_through(module, pipes) do
-    pipes = List.wrap(pipes)
+  def pipe_through(module, new_pipes) do
+    new_pipes = List.wrap(new_pipes)
+    %{pipes: pipes} = top = get_top(module)
 
-    update_stack(module, fn [scope|stack] ->
-      scope = put_in scope.pipes, scope.pipes ++ pipes
-      [scope|stack]
-    end)
+    if pipe = Enum.find(new_pipes, &(&1 in pipes)) do
+      raise ArgumentError,
+            "duplicate pipe_through for #{inspect(pipe)}. " <>
+              "A plug may only be used once inside a scoped pipe_through"
+    end
+
+    put_top(module, %{top | pipes: pipes ++ new_pipes})
   end
 
   @doc """
@@ -55,89 +139,143 @@ defmodule Phoenix.Router.Scope do
   end
 
   def push(module, opts) when is_list(opts) do
-    path  = Keyword.get(opts, :path)
-    if path, do: path = Plug.Router.Utils.split(path)
+    top = get_top(module)
 
-    alias = Keyword.get(opts, :alias)
-    if alias, do: alias = Atom.to_string(alias)
+    path =
+      if path = Keyword.get(opts, :path) do
+        path |> validate_path() |> String.split("/", trim: true)
+      else
+        []
+      end
 
-    scope = %Scope{path: path,
-                   alias: alias,
-                   as: Keyword.get(opts, :as),
-                   host: Keyword.get(opts, :host),
-                   pipes: [],
-                   private: Keyword.get(opts, :private, %{}),
-                   assigns: Keyword.get(opts, :assigns, %{})}
+    alias = append_unless_false(top, opts, :alias, &Atom.to_string(&1))
+    as = append_unless_false(top, opts, :as, & &1)
 
-    update_stack(module, fn stack -> [scope|stack] end)
+    hosts =
+      case Keyword.fetch(opts, :host) do
+        {:ok, val} -> validate_hosts!(val)
+        :error -> top.hosts
+      end
+
+    private = Keyword.get(opts, :private, %{})
+    assigns = Keyword.get(opts, :assigns, %{})
+
+    update_stack(module, fn stack -> [top | stack] end)
+
+    put_top(module, %Scope{
+      path: top.path ++ path,
+      alias: alias,
+      as: as,
+      hosts: hosts,
+      pipes: top.pipes,
+      private: Map.merge(top.private, private),
+      assigns: Map.merge(top.assigns, assigns),
+      log: Keyword.get(opts, :log, top.log),
+      trailing_slash?: deprecated_trailing_slash(opts, top)
+    })
+  end
+
+  defp deprecated_trailing_slash(opts, top) do
+    case Keyword.fetch(opts, :trailing_slash) do
+      {:ok, value} ->
+        IO.warn(
+          "the :trailing_slash option in the router is deprecated. " <>
+            "If you are using Phoenix.VerifiedRoutes, it has no effect. " <>
+            "If you are using the generated helpers, migrate to Phoenix.VerifiedRoutes"
+        )
+
+        value == true
+
+      :error ->
+        top.trailing_slash?
+    end
+  end
+
+  defp validate_hosts!(nil), do: []
+  defp validate_hosts!(host) when is_binary(host), do: [host]
+
+  defp validate_hosts!(hosts) when is_list(hosts) do
+    for host <- hosts do
+      unless is_binary(host), do: raise_invalid_host(host)
+
+      host
+    end
+  end
+
+  defp validate_hosts!(invalid), do: raise_invalid_host(invalid)
+
+  defp raise_invalid_host(host) do
+    raise ArgumentError,
+          "expected router scope :host to be compile-time string or list of strings, got: #{inspect(host)}"
+  end
+
+  defp append_unless_false(top, opts, key, fun) do
+    case opts[key] do
+      false -> []
+      nil -> Map.fetch!(top, key)
+      other -> Map.fetch!(top, key) ++ [fun.(other)]
+    end
   end
 
   @doc """
   Pops a scope from the module stack.
   """
   def pop(module) do
-    update_stack(module, fn [_|stack] -> stack end)
+    update_stack(module, fn [top | stack] ->
+      put_top(module, top)
+      stack
+    end)
   end
 
   @doc """
-  Returns true if the module's definition is currently within a scope block
+  Expands the alias in the current router scope.
   """
-  def inside_scope?(module), do: length(get_stack(module)) > 1
-
-  defp join(module, path, alias, as, private, assigns) do
-    stack = get_stack(module)
-    {join_path(stack, path), find_host(stack), join_alias(stack, alias),
-     join_as(stack, as), join_pipe_through(stack), join_private(stack, private),
-     join_assigns(stack, assigns)}
+  def expand_alias(module, alias) do
+    join_alias(get_top(module), alias)
   end
 
-  defp join_path(stack, path) do
-    "/" <>
-      ([Plug.Router.Utils.split(path)|extract(stack, :path)]
-       |> Enum.reverse()
-       |> Enum.concat()
-       |> Enum.join("/"))
+  @doc """
+  Returns the full path in the current router scope.
+  """
+  def full_path(module, path) do
+    split_path = String.split(path, "/", trim: true)
+    prefix = get_top(module).path
+
+    cond do
+      prefix == [] -> path
+      split_path == [] -> "/" <> Enum.join(prefix, "/")
+      true -> "/" <> Path.join(get_top(module).path ++ split_path)
+    end
   end
 
-  defp join_alias(stack, alias) when is_atom(alias) do
-    [alias|extract(stack, :alias)]
-    |> Enum.reverse()
-    |> Module.concat()
+  defp join(top, path, alias, alias?, as, private, assigns) do
+    joined_alias =
+      if alias? do
+        join_alias(top, alias)
+      else
+        alias
+      end
+
+    {join_path(top, path), joined_alias, join_as(top, as), Map.merge(top.private, private),
+     Map.merge(top.assigns, assigns)}
   end
 
-  defp join_as(_stack, nil), do: nil
-  defp join_as(stack, as) when is_atom(as) or is_binary(as) do
-    [as|extract(stack, :as)]
-    |> Enum.reverse()
-    |> Enum.join("_")
+  defp join_path(top, path) do
+    "/" <> Enum.join(top.path ++ String.split(path, "/", trim: true), "/")
   end
 
-  defp join_private(stack, private) do
-    Enum.reduce stack, private, &Map.merge(&1.private, &2)
+  defp join_alias(top, alias) when is_atom(alias) do
+    case Atom.to_string(alias) do
+      <<head, _::binary>> when head in ?a..?z -> alias
+      alias -> Module.concat(top.alias ++ [alias])
+    end
   end
 
-  defp join_assigns(stack, assigns) do
-    Enum.reduce stack, assigns, &Map.merge(&1.assigns, &2)
-  end
+  defp join_as(_top, nil), do: nil
+  defp join_as(top, as) when is_atom(as) or is_binary(as), do: Enum.join(top.as ++ [as], "_")
 
-  defp join_pipe_through(stack) do
-    for scope <- Enum.reverse(stack),
-        item <- scope.pipes,
-        do: item
-  end
-
-  defp find_host(stack) do
-    Enum.find_value(stack, & &1.host)
-  end
-
-  defp extract(stack, attr) do
-    for scope <- stack,
-        item = Map.fetch!(scope, attr),
-        do: item
-  end
-
-  defp get_stack(module) do
-    get_attribute(module, @stack)
+  defp get_top(module) do
+    get_attribute(module, @top)
   end
 
   defp update_stack(module, fun) do
@@ -146,6 +284,11 @@ defmodule Phoenix.Router.Scope do
 
   defp update_pipes(module, fun) do
     update_attribute(module, @pipes, fun)
+  end
+
+  defp put_top(module, value) do
+    Module.put_attribute(module, @top, value)
+    value
   end
 
   defp get_attribute(module, attr) do

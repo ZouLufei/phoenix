@@ -1,10 +1,14 @@
+defmodule Phoenix.Router.HealthController do
+  use Phoenix.Controller, formats: []
+  def health(conn, _params), do: text(conn, "health")
+end
+
 defmodule Phoenix.Router.ForwardTest do
   use ExUnit.Case, async: true
   use RouterHelper
 
   defmodule Controller do
-    use Phoenix.Controller
-
+    use Phoenix.Controller, formats: []
     plug :assign_fwd_script
 
     def index(conn, _params), do: text(conn, "admin index")
@@ -19,6 +23,10 @@ defmodule Phoenix.Router.ForwardTest do
 
     get "/", Controller, :api_root
     get "/users", Controller, :api_users
+
+    scope "/health", Phoenix.Router do
+      forward "/", HealthController, :health
+    end
   end
 
   defmodule AdminDashboard do
@@ -29,15 +37,24 @@ defmodule Phoenix.Router.ForwardTest do
     forward "/api-admin", ApiRouter
   end
 
+  defmodule InitPlug do
+    def init(_), do: %{non: :literal}
+    def call(conn, %{non: :literal} = opts), do: assign(conn, :opts, opts)
+  end
+
+  defmodule AssignOptsPlug do
+    def init(opts), do: opts
+    def call(conn, opts), do: assign(conn, :opts, opts)
+  end
+
   defmodule Router do
     use Phoenix.Router
 
     scope "/" do
       get "/stats", Controller, :stats
       forward "/admin", AdminDashboard
-      scope "/internal" do
-        forward "/api/v1", ApiRouter
-      end
+      forward "/init", InitPlug
+      forward "/assign/opts", AssignOptsPlug, %{foo: "bar"}
     end
   end
 
@@ -47,7 +64,7 @@ defmodule Phoenix.Router.ForwardTest do
   end
 
   test "forwards path to plug" do
-    conn = call(Router, :get, "admin")
+    conn = call(Router, :get, "/admin")
     assert conn.script_name == []
     assert conn.assigns[:fwd_script] == ["admin"]
     assert conn.status == 200
@@ -55,7 +72,7 @@ defmodule Phoenix.Router.ForwardTest do
   end
 
   test "forwards any request starting with forward path" do
-    conn = call(Router, :get, "admin/stats")
+    conn = call(Router, :get, "/admin/stats")
     assert conn.script_name == []
     assert conn.assigns[:fwd_script] == ["admin"]
     assert conn.status == 200
@@ -63,57 +80,67 @@ defmodule Phoenix.Router.ForwardTest do
   end
 
   test "forward with dynamic segments raises" do
-    router = quote do
-      defmodule BadRouter do
-        use Phoenix.Router
-        forward "/api/:version", ApiRouter
+    router =
+      quote do
+        defmodule BadRouter do
+          use Phoenix.Router
+          forward "/api/:version", ApiRouter
+        end
       end
-    end
 
-    assert_raise ArgumentError, ~r{Dynamic segment `"/api/:version"` not allowed}, fn ->
+    assert_raise ArgumentError, ~r{dynamic segment "/api/:version" not allowed}, fn ->
       Code.eval_quoted(router)
     end
   end
 
-  test "forward with non-unique plugs raises" do
-    router = quote do
-      defmodule BadRouter do
-        use Phoenix.Router
-        forward "/api/v1", ApiRouter
-        forward "/api/v2", ApiRouter
-      end
-    end
-
-    assert_raise ArgumentError, ~r{`Phoenix.Router.ForwardTest.ApiRouter` has already been forwarded}, fn ->
-      Code.eval_quoted(router)
-    end
-  end
-
-  test "accumulates phoenix_forwards" do
-    conn = call(Router, :get, "admin")
-    assert conn.private[Router] == {[], %{
-      Phoenix.Router.ForwardTest.AdminDashboard => ["admin"],
-      Phoenix.Router.ForwardTest.ApiRouter => ["api", "v1"]
-    }}
-    assert conn.private[AdminDashboard] ==
-      {["admin"], %{Phoenix.Router.ForwardTest.ApiRouter => ["api-admin"]}}
-
+  test "accumulates script names" do
+    conn = call(Router, :get, "/admin")
+    assert conn.private[Router] == []
+    assert conn.private[AdminDashboard] == ["admin"]
   end
 
   test "helpers cascade script name across forwards based on main router" do
     import AdminDashboard.Helpers
     assert page_path(%Plug.Conn{}, :stats) == "/stats"
 
-    conn = call(Router, :get, "stats")
+    conn = call(Router, :get, "/stats")
     assert page_path(conn, :stats) == "/admin/stats"
 
-    conn = call(Router, :get, "stats", _params = nil, ["phx"])
+    conn = call(Router, :get, "/stats", _params = nil, ["phx"])
     assert page_path(conn, :stats) == "/phx/admin/stats"
 
-    conn = call(Router, :get, "admin/stats")
+    conn = call(Router, :get, "/admin/stats")
     assert page_path(conn, :stats) == "/admin/stats"
 
-    conn = call(Router, :get, "admin/stats", _params = nil, ["phx"])
+    conn = call(Router, :get, "/admin/stats", _params = nil, ["phx"])
     assert page_path(conn, :stats) == "/phx/admin/stats"
+  end
+
+  test "forward can handle plugs with non-literal init returns" do
+    assert call(Router, :get, "/init").assigns.opts == %{non: :literal}
+  end
+
+  test "forward can handle plugs with custom options" do
+    assert call(Router, :get, "/assign/opts").assigns.opts == %{foo: "bar"}
+  end
+
+  test "forward with scoped alias" do
+    conn = call(ApiRouter, :get, "/health")
+    assert conn.resp_body == "health"
+    assert conn.private[ApiRouter] == []
+  end
+
+  test "forwards raises if using the plug to arguments" do
+    error_message = ~r/expect a module/
+
+    assert_raise(ArgumentError, error_message, fn ->
+      defmodule BrokenRouter do
+        use Phoenix.Router
+
+        scope "/" do
+          forward "/health", to: HealthController
+        end
+      end
+    end)
   end
 end
